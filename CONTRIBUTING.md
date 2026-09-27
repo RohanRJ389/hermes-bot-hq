@@ -65,15 +65,15 @@ nothing extra to pip-install.
 
 - **Easier setup.** Two switches, a backend restart, and a yellow banner if
   you miss one — anything that makes the first-run path shorter or obvious.
-- **Bot avatars on the fleet page.** Cards currently identify a bot by name
-  and color. If Hermes already has an avatar for the profile, show it in Bot
-  HQ (fleet card and the bot's own page).
+- **Blinking avatars.** Fleet cards and the bot page show the face, but the
+  eyes stay still. In Hermes Desktop those faces blink. Make Bot HQ do the
+  same, without copying the whole Bot Mode face renderer.
 - **A better home in Hermes.** Bot HQ is a sidebar page plus a palette
   command. If it belongs on the main dashboard, in a tab, or somewhere
   people already look, propose it.
-- **Hermes web dashboard.** The UI today is Desktop-only. The Home reader is
-  already HTTP; extending this to the Hermes web dashboard (not a one-off
-  site) is in scope.
+- **Web view.** Bot HQ only runs inside Hermes Desktop. The Home reader is
+  already HTTP. Make the same fleet and bot page usable in the Hermes web
+  view, not as a separate site.
 - **Another example Home.** `examples/` is one research-desk pair. A second
   complete `schema.json` + `data.json` for a different kind of bot (still
   only the closed widget types) is a good first PR — keep `examples/README.md`

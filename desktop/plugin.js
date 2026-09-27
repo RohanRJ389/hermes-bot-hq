@@ -23,6 +23,7 @@ import {
   Skeleton,
   StatusDot,
   Tip,
+  Blobatar,
   atom,
   cn,
   haptic,
@@ -38,6 +39,13 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const PLUGIN_ID = 'hermes-bot-hq'
 const ROUTE = '/control-center'
+
+/** Avatar image queries stay off `PLUGIN_ID`. Turn events invalidate that
+ *  prefix, and a `profiles.get_asset` reply is the image itself — refetching
+ *  it on every turn would re-download every face. Fleet Refresh invalidates
+ *  this key on purpose. */
+const AVATAR_QUERY_KEY = 'hermes-bot-hq-avatar'
+const AVATAR_SIZE = 28
 
 /** A bot whose newest message landed inside this window reads as active — the
  *  same 90s liveness window Bot Mode's Active-now strip uses, so the two
@@ -124,6 +132,10 @@ function rosterFromProfiles(payload) {
         role: String(bots.description || row?.description || ''),
         model: row?.model ? String(row.model) : '',
         hidden: Boolean(bots.hidden),
+        hasAvatar: Boolean(row?.has_avatar),
+        color: typeof bots.color === 'string' ? bots.color.trim() : '',
+        shape: typeof bots.shape === 'string' ? bots.shape.trim() : '',
+        custom: Boolean(bots.custom),
         lastActive: activityStamp(row)
       }
     })
@@ -301,6 +313,158 @@ function useHomeIndex() {
  * Shared chrome
  * ------------------------------------------------------------------ */
 
+/** Same order Bot Mode uses when a profile has no saved shape. */
+const AVATAR_SHAPES = ['circle', 'squircle', 'pill', 'triangle', 'hexagon', 'cloud', 'drop']
+
+/** The primary profile's fixed face. `profileColor('default')` is empty, and
+ *  Bot Mode paints a violet squircle instead of a black square. */
+const PRIMARY_AVATAR_COLOR = '#8b5cf6'
+
+function defaultShapeFor(name) {
+  let hash = 0
+
+  for (const ch of name) {
+    hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  }
+
+  return AVATAR_SHAPES[hash % AVATAR_SHAPES.length]
+}
+
+/** The roster writes a 160×160 PNG of whatever face was on screen, for notices.
+ *  Bot Mode ignores that still and draws the live face, so a recolor does not
+ *  stick in the file. Treat the same files as "no photo". */
+function isBackfilledFacePng(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) {
+    return false
+  }
+
+  try {
+    const bin = atob(dataUrl.slice('data:image/png;base64,'.length).slice(0, 48))
+
+    if (bin.length < 24) {
+      return false
+    }
+
+    const width = (bin.charCodeAt(16) << 24) | (bin.charCodeAt(17) << 16) | (bin.charCodeAt(18) << 8) | bin.charCodeAt(19)
+    const height = (bin.charCodeAt(20) << 24) | (bin.charCodeAt(21) << 16) | (bin.charCodeAt(22) << 8) | bin.charCodeAt(23)
+
+    return width === 160 && height === 160
+  } catch {
+    return false
+  }
+}
+
+function isBlobShape(shape) {
+  return shape === 'blobatar' || (typeof shape === 'string' && shape.startsWith('blobatar:'))
+}
+
+/** What the bot list is drawing right now: a saved blob seed, the primary
+ *  profile's violet squircle, or the name's shape in the saved color. */
+function liveFace(bot, { color = '', shape = '', custom = false } = {}) {
+  if (String(bot || '').trim().toLowerCase() === 'default' && !custom) {
+    return { kind: 'shape', shape: 'squircle', color: PRIMARY_AVATAR_COLOR }
+  }
+
+  if (isBlobShape(shape)) {
+    return { kind: 'blob', shape }
+  }
+
+  return {
+    kind: 'shape',
+    shape: AVATAR_SHAPES.includes(shape) ? shape : defaultShapeFor(bot),
+    color: color || profileColor(bot) || PRIMARY_AVATAR_COLOR
+  }
+}
+
+function shapeBody(shape, color) {
+  const fill = { fill: color }
+
+  switch (shape) {
+    case 'squircle':
+      return h('rect', { ...fill, x: 3, y: 3, width: 34, height: 34, rx: 11 })
+    case 'pill':
+      return h('rect', { ...fill, x: 2, y: 7, width: 36, height: 26, rx: 13 })
+    case 'triangle':
+      return h('path', { ...fill, d: 'M20 5.5 L36 33.5 L4 33.5 Z' })
+    case 'hexagon':
+      return h('path', { ...fill, d: 'M20 3.5 L34.5 11.75 L34.5 28.25 L20 36.5 L5.5 28.25 L5.5 11.75 Z' })
+    case 'cloud':
+      return h('path', { ...fill, d: 'M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z' })
+    case 'drop':
+      return h('path', { ...fill, d: 'M20 3 C20 3 6 20 6 27 a14 13.5 0 0 0 28 0 C34 20 20 3 20 3 Z' })
+    default:
+      return h('circle', { ...fill, cx: 20, cy: 20, r: 17.5 })
+  }
+}
+
+function ShapeFace({ shape, color }) {
+  return h(
+    'svg',
+    {
+      viewBox: '0 0 40 40',
+      width: AVATAR_SIZE,
+      height: AVATAR_SIZE,
+      className: 'shrink-0',
+      'aria-hidden': true
+    },
+    shapeBody(shape, color),
+    h('circle', { cx: 16, cy: 17, r: 2.2, fill: '#f4efe4' }),
+    h('circle', { cx: 24, cy: 17, r: 2.2, fill: '#f4efe4' })
+  )
+}
+
+/** One profile's face. A real upload comes from `profiles.get_asset`. The
+ *  160px face snapshot does not: the bot list ignores it and draws the live
+ *  shape, and so does this page. */
+function useAvatar(bot, hasAvatar) {
+  return useQuery({
+    queryKey: [AVATAR_QUERY_KEY, bot],
+    queryFn: () => host.request('profiles.get_asset', { name: bot, asset: 'avatar' }),
+    enabled: Boolean(bot && hasAvatar),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    retry: false
+  })
+}
+
+function BotAvatar({ bot, color, hasAvatar, shape, custom }) {
+  const asset = useAvatar(bot, hasAvatar)
+  const data = asset.data?.found && asset.data?.data ? String(asset.data.data) : ''
+  const src = data.startsWith('data:image/') && !isBackfilledFacePng(data) ? data : ''
+  const face = liveFace(bot, { color, shape, custom })
+
+  if (src) {
+    return h('img', {
+      alt: '',
+      src,
+      className: 'shrink-0',
+      style: {
+        width: AVATAR_SIZE,
+        height: AVATAR_SIZE,
+        borderRadius: '22%',
+        objectFit: 'cover',
+        display: 'block'
+      }
+    })
+  }
+
+  if (face.kind === 'blob' && typeof Blobatar === 'function') {
+    const parts = String(face.shape || '').split(':')
+    const seed = parts[1] || bot
+
+    return h(
+      'span',
+      {
+        className: 'inline-flex shrink-0',
+        style: { width: AVATAR_SIZE, height: AVATAR_SIZE }
+      },
+      h(Blobatar, { name: seed, size: AVATAR_SIZE })
+    )
+  }
+
+  return h(ShapeFace, { shape: face.shape, color: face.color })
+}
+
 function StatusPill({ status }) {
   return h(
     'span',
@@ -376,8 +540,8 @@ function BotCard({ row, home, busy }) {
     },
     h(
       'div',
-      { className: 'flex items-start gap-3' },
-      h('span', { className: 'mt-1 size-2.5 shrink-0 rounded-full', style: { background: profileColor(row.bot) } }),
+      { className: 'flex items-center gap-3' },
+      h(BotAvatar, { bot: row.bot, color: row.color, hasAvatar: row.hasAvatar, shape: row.shape, custom: row.custom }),
       h(
         'div',
         { className: 'min-w-0 flex-1' },
@@ -490,6 +654,7 @@ function FleetPage() {
       onRefresh: () => {
         haptic('tap')
         queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] })
+        queryClient.invalidateQueries({ queryKey: [AVATAR_QUERY_KEY] })
       }
     }),
     index.isError ? h(BackendHint, {}) : null,
@@ -1048,7 +1213,7 @@ function DetailHeader({ bot, row, status, subtitle, children }) {
       style: { borderColor: 'var(--ui-stroke-secondary)' }
     },
     h(Button, { variant: 'ghost', size: 'sm', onClick: () => selectBot(null) }, 'Back'),
-    h('span', { className: 'size-2.5 shrink-0 rounded-full', style: { background: profileColor(bot) } }),
+    h(BotAvatar, { bot, color: row.color, hasAvatar: row.hasAvatar, shape: row.shape, custom: row.custom }),
     h(
       'div',
       { className: 'min-w-0 flex-1' },
@@ -1197,29 +1362,11 @@ function Composer({ bot, processing, setProcessing, homeUpdatedAt }) {
       return
     }
 
-    setProcessing(true)
-
-    try {
-      await sendPrompt(bot, prompt)
-      setText('')
-      await refreshDashboard(bot)
-    } catch (error) {
-      // Desktop's JSON-RPC door times out at 30s. `timeout: 300` on cli.exec
-      // is the subprocess budget, not that RPC window — so a long Home rewrite
-      // still finishes, but the waiter dies. That is not "could not reach".
-      if (isCliExecTimeout(error)) {
-        setText('')
-        host.notify({
-          kind: 'info',
-          message: 'Still working — this dashboard will update when the bot finishes'
-        })
-        await awaitHomeCatchup(bot, homeUpdatedAt)
-      } else {
-        host.notifyError(error, `Could not reach ${bot}`)
-      }
-    } finally {
-      setProcessing(false)
-    }
+    await deliverPrompt(bot, prompt, {
+      setProcessing,
+      homeUpdatedAt,
+      onSent: () => setText('')
+    })
   }
 
   return h(
@@ -1493,29 +1640,7 @@ async function runDeclaredButton(bot, action, { item, processing, setProcessing,
       return
     }
 
-    if (typeof setProcessing === 'function') {
-      setProcessing(true)
-    }
-
-    try {
-      await sendPrompt(bot, prompt)
-      await refreshDashboard(bot)
-    } catch (error) {
-      if (isCliExecTimeout(error)) {
-        host.notify({
-          kind: 'info',
-          message: 'Still working — this dashboard will update when the bot finishes'
-        })
-        await awaitHomeCatchup(bot, homeUpdatedAt)
-      } else {
-        host.notifyError(error, `Could not reach ${bot}`)
-      }
-    } finally {
-      if (typeof setProcessing === 'function') {
-        setProcessing(false)
-      }
-    }
-
+    await deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt })
     return
   }
 
@@ -1581,6 +1706,48 @@ async function awaitHomeCatchup(bot, previousUpdatedAt, { intervalMs = 2_000, ma
     }
 
     await delay(intervalMs)
+  }
+}
+
+/** Send a prompt, then refresh the Home. Shared by the composer and send_prompt buttons.
+ *
+ *  Desktop's JSON-RPC door times out at 30s. `timeout: 300` on cli.exec is the
+ *  subprocess budget, not that RPC window — a long Home rewrite still finishes,
+ *  but the waiter dies. That is not "could not reach". `onSent` runs once the
+ *  prompt has been accepted or the waiter has given up, so the composer can
+ *  clear its box in both cases and leave it alone when the send failed.
+ */
+async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent } = {}) {
+  if (typeof setProcessing === 'function') {
+    setProcessing(true)
+  }
+
+  try {
+    await sendPrompt(bot, prompt)
+
+    if (typeof onSent === 'function') {
+      onSent()
+    }
+
+    await refreshDashboard(bot)
+  } catch (error) {
+    if (isCliExecTimeout(error)) {
+      if (typeof onSent === 'function') {
+        onSent()
+      }
+
+      host.notify({
+        kind: 'info',
+        message: 'Still working — this dashboard will update when the bot finishes'
+      })
+      await awaitHomeCatchup(bot, homeUpdatedAt)
+    } else {
+      host.notifyError(error, `Could not reach ${bot}`)
+    }
+  } finally {
+    if (typeof setProcessing === 'function') {
+      setProcessing(false)
+    }
   }
 }
 

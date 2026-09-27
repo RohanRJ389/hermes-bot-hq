@@ -107,7 +107,7 @@ Issues and pull requests are welcome. MIT, no CLA.
 
 Clone into `~/.hermes/plugins/hermes-bot-hq`, then do steps 2–4 above so you are running your checkout. How to map a change to a file, what the contract forbids, and ideas that would help: [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Helpful starting points: shorter setup, bot avatars on the fleet page, another example Home, a better place for Bot HQ inside Hermes, the Hermes web dashboard, or a new closed widget type.
+Helpful starting points: shorter setup, blinking avatars, another example Home, a better place for Bot HQ inside Hermes, the Hermes web view, or a new closed widget type.
 
 ## Layout
 

@@ -64,6 +64,53 @@ test('reads names and Bot Mode identity out of profiles.list', () => {
   )
 })
 
+test('reads avatar presence and Bot Mode color from the profile', () => {
+  const { rosterFromProfiles } = loadPlugin()
+
+  const roster = rosterFromProfiles({
+    profiles: [
+      {
+        name: 'researcher',
+        has_avatar: true,
+        ui_meta: { 'hermes-bots': { color: '#112233' } }
+      },
+      { name: 'writer', has_avatar: 0, ui_meta: { 'hermes-bots': { color: '  ' } } },
+      { name: 'default' }
+    ]
+  })
+
+  assert.deepEqual(
+    roster.map(row => [row.bot, row.hasAvatar, row.color]),
+    [
+      ['default', false, ''],
+      ['researcher', true, '#112233'],
+      ['writer', false, '']
+    ]
+  )
+})
+
+test('a saved face uses the live color, and the 160px snapshot does not', () => {
+  const { liveFace, isBackfilledFacePng } = loadPlugin()
+
+  assert.deepEqual(liveFace('researcher', { shape: 'hexagon', color: 'hsl(240 68% 58%)', custom: true }), {
+    kind: 'shape',
+    shape: 'hexagon',
+    color: 'hsl(240 68% 58%)'
+  })
+  assert.equal(liveFace('default').color, '#8b5cf6')
+  assert.equal(liveFace('accountant').kind, 'shape')
+  assert.equal(liveFace('job-scout', { shape: 'blobatar' }).kind, 'blob')
+
+  const png = Buffer.alloc(24)
+  png.writeUInt32BE(160, 16)
+  png.writeUInt32BE(160, 20)
+  const backfill = `data:image/png;base64,${png.toString('base64')}`
+
+  assert.equal(isBackfilledFacePng(backfill), true)
+  assert.equal(isBackfilledFacePng('data:image/png;base64,aaaa'), false)
+  assert.equal(isBackfilledFacePng('data:image/jpeg;base64,aaaa'), false)
+})
+
 test('accepts the older bare-array profiles payload', () => {
   const { rosterFromProfiles } = loadPlugin()
 
