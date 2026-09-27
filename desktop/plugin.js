@@ -1197,29 +1197,11 @@ function Composer({ bot, processing, setProcessing, homeUpdatedAt }) {
       return
     }
 
-    setProcessing(true)
-
-    try {
-      await sendPrompt(bot, prompt)
-      setText('')
-      await refreshDashboard(bot)
-    } catch (error) {
-      // Desktop's JSON-RPC door times out at 30s. `timeout: 300` on cli.exec
-      // is the subprocess budget, not that RPC window — so a long Home rewrite
-      // still finishes, but the waiter dies. That is not "could not reach".
-      if (isCliExecTimeout(error)) {
-        setText('')
-        host.notify({
-          kind: 'info',
-          message: 'Still working — this dashboard will update when the bot finishes'
-        })
-        await awaitHomeCatchup(bot, homeUpdatedAt)
-      } else {
-        host.notifyError(error, `Could not reach ${bot}`)
-      }
-    } finally {
-      setProcessing(false)
-    }
+    await deliverPrompt(bot, prompt, {
+      setProcessing,
+      homeUpdatedAt,
+      onSent: () => setText('')
+    })
   }
 
   return h(
@@ -1493,29 +1475,7 @@ async function runDeclaredButton(bot, action, { item, processing, setProcessing,
       return
     }
 
-    if (typeof setProcessing === 'function') {
-      setProcessing(true)
-    }
-
-    try {
-      await sendPrompt(bot, prompt)
-      await refreshDashboard(bot)
-    } catch (error) {
-      if (isCliExecTimeout(error)) {
-        host.notify({
-          kind: 'info',
-          message: 'Still working — this dashboard will update when the bot finishes'
-        })
-        await awaitHomeCatchup(bot, homeUpdatedAt)
-      } else {
-        host.notifyError(error, `Could not reach ${bot}`)
-      }
-    } finally {
-      if (typeof setProcessing === 'function') {
-        setProcessing(false)
-      }
-    }
-
+    await deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt })
     return
   }
 
@@ -1581,6 +1541,48 @@ async function awaitHomeCatchup(bot, previousUpdatedAt, { intervalMs = 2_000, ma
     }
 
     await delay(intervalMs)
+  }
+}
+
+/** Send a prompt, then refresh the Home. Shared by the composer and send_prompt buttons.
+ *
+ *  Desktop's JSON-RPC door times out at 30s. `timeout: 300` on cli.exec is the
+ *  subprocess budget, not that RPC window — a long Home rewrite still finishes,
+ *  but the waiter dies. That is not "could not reach". `onSent` runs once the
+ *  prompt has been accepted or the waiter has given up, so the composer can
+ *  clear its box in both cases and leave it alone when the send failed.
+ */
+async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent } = {}) {
+  if (typeof setProcessing === 'function') {
+    setProcessing(true)
+  }
+
+  try {
+    await sendPrompt(bot, prompt)
+
+    if (typeof onSent === 'function') {
+      onSent()
+    }
+
+    await refreshDashboard(bot)
+  } catch (error) {
+    if (isCliExecTimeout(error)) {
+      if (typeof onSent === 'function') {
+        onSent()
+      }
+
+      host.notify({
+        kind: 'info',
+        message: 'Still working — this dashboard will update when the bot finishes'
+      })
+      await awaitHomeCatchup(bot, homeUpdatedAt)
+    } else {
+      host.notifyError(error, `Could not reach ${bot}`)
+    }
+  } finally {
+    if (typeof setProcessing === 'function') {
+      setProcessing(false)
+    }
   }
 }
 
