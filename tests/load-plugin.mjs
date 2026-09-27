@@ -15,6 +15,8 @@ import { readFileSync } from 'node:fs'
 
 const EXPORTED = [
   'rosterFromProfiles',
+  'isBackfilledFacePng',
+  'liveFace',
   'activityStamp',
   'visibleRoster',
   'routinesFor',
@@ -105,6 +107,7 @@ export function loadPlugin({ requestResults = {}, restResults = {}, revealPath =
     jsx: (type, props, key) => ({ type, props, key }),
     jsxs: (type, props, key) => ({ type, props, key }),
     profileColor: () => '#abcdef',
+    Blobatar: 'Blobatar',
     queryClient: {
       invalidateQueries: params => {
         invalidations.push({ kind: 'invalidate', ...params })
