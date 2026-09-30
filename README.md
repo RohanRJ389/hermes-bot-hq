@@ -2,7 +2,7 @@
 
 <!-- unique-cloners -->
 <div align="center">
-<font size="7"><strong>168</strong></font><br>
+<font size="7"><strong>230</strong></font><br>
 <font size="5">Unique cloners</font><br>
 <sub>Sum of daily uniques, not deduplicated across days.</sub>
 </div>
