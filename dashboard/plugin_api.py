@@ -7,8 +7,10 @@ Why this layer exists at all: a bot publishes its dashboard as plain JSON in
 its own profile directory, which is the right storage (no new database, visible
 from a shell, editable by hand). But a desktop plugin may only import the
 plugin SDK and the gateway exposes no file-read RPC, so something server-side
-has to hand those files to the UI. That is all this module is — a reader and a
-validator. It never writes a Home; bots own their own files.
+has to hand those files to the UI. This module is that reader and validator,
+plus the runner for ``run_action`` buttons. It never writes ``schema.json`` or
+``data.json``; the one Home file it writes is the append-only click log
+``home/actions.jsonl``.
 
 Validation is not decoration. ``data.json`` is model-authored, so every payload
 is treated as untrusted: unknown widget types are reported rather than
@@ -18,10 +20,13 @@ outright instead of being streamed into the renderer.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import logging
 import os
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -42,10 +47,22 @@ DEFAULT_STALE_AFTER_MINUTES = 24 * 60
 
 WIDGET_TYPES = frozenset({"kpi", "table", "list", "markdown", "timeseries", "sources", "alerts", "buttons"})
 WIDGETS_WITH_BUTTONS = frozenset({"buttons", "list", "alerts"})
-ACTION_TYPES = frozenset({"run_routine", "open_chat", "open_path", "open_url", "send_prompt"})
+ACTION_TYPES = frozenset({"run_routine", "open_chat", "open_path", "open_url", "send_prompt", "run_action"})
 TONES = frozenset({"good", "warn", "bad", "neutral"})
 ALERT_LEVELS = frozenset({"info", "warn", "error"})
 ITEM_ID_RE = re.compile(r"^[a-z0-9_-]+$")
+SCRIPT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# run_action limits
+SCRIPT_TIMEOUT_S = 30
+MAX_SCRIPT_BYTES = 1024 * 1024
+MAX_SCRIPT_PREVIEW_CHARS = 20_000
+MAX_SCRIPT_OUTPUT_BYTES = 64 * 1024
+MAX_LOG_LINES = 2000
+MAX_LOG_READ_BYTES = 2 * 1024 * 1024
+MAX_PENDING_SHOWN = 50
+PATCH_FIELDS = {"list": ("title", "detail", "tone"), "alerts": ("message", "detail", "level")}
+PATCH_CLIPS = {"title": 160, "detail": 600, "message": 300}
 
 CAPS = {
     "kpi_items": 12,
@@ -81,6 +98,13 @@ def _bot_home_dir(bot: str) -> Path:
         raise HTTPException(status_code=404, detail=f"bot '{bot}' not found")
 
     return profile_dir / "home"
+
+
+def _canonical_bot(bot: str) -> str:
+    """The profile name approvals are keyed by, so ``Monitor`` and ``monitor`` share one file."""
+    from hermes_cli.profiles import normalize_profile_name
+
+    return normalize_profile_name(bot)
 
 
 def _known_bots() -> List[str]:
@@ -223,6 +247,18 @@ def _parse_buttons(raw: Any, warnings: List[str], where: str) -> List[Dict[str, 
                 )
 
             action["prompt"] = prompt[: CAPS["prompt_chars"]]
+        elif action_type == "run_action":
+            script = str(entry.get("script") or "").strip()
+
+            if not SCRIPT_NAME_RE.match(script):
+                shown = script or "(missing)"
+                warnings.append(
+                    f"action '{action['id']}' script '{shown}' must be a file name matching [a-z0-9][a-z0-9_-]"
+                )
+                continue
+
+            action["script"] = script
+            action["notify"] = bool(entry.get("notify"))
 
         buttons.append(action)
 
@@ -660,6 +696,14 @@ def validate_data(raw: Any, schema: Dict[str, Any]) -> Tuple[Dict[str, Any], Lis
         age_minutes = (datetime.now(timezone.utc) - updated).total_seconds() / 60
         stale = age_minutes > float(stale_after)
 
+    acked_seq = raw.get("acked_seq", 0)
+
+    if not isinstance(acked_seq, int) or isinstance(acked_seq, bool) or acked_seq < 0:
+        if "acked_seq" in raw:
+            warnings.append("acked_seq must be a non-negative integer; assuming 0")
+
+        acked_seq = 0
+
     return (
         {
             "widgets": widgets,
@@ -667,9 +711,384 @@ def validate_data(raw: Any, schema: Dict[str, Any]) -> Tuple[Dict[str, Any], Lis
             "note": _clip(raw.get("note"), 300),
             "stale": stale,
             "stale_after_minutes": int(stale_after),
+            "acked_seq": acked_seq,
         },
         warnings,
     )
+
+
+# ── Run actions ────────────────────────────────────────────────────────────
+
+
+def _actions_log_path(home_dir: Path) -> Path:
+    return home_dir / "actions.jsonl"
+
+
+def read_action_events(home_dir: Path) -> List[Dict[str, Any]]:
+    """Parse ``actions.jsonl``. Lines that do not parse are skipped, never fatal.
+
+    Only the tail is read once the file outgrows ``MAX_LOG_READ_BYTES``; the
+    log is compacted on write, so that only matters for a hand-edited file.
+    """
+    path = _actions_log_path(home_dir)
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+
+    try:
+        with path.open("rb") as handle:
+            if size > MAX_LOG_READ_BYTES:
+                handle.seek(size - MAX_LOG_READ_BYTES)
+                handle.readline()
+
+            raw = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+
+    events = []
+
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+
+        if isinstance(event, dict) and isinstance(event.get("seq"), int) and not isinstance(event.get("seq"), bool):
+            events.append(event)
+
+    return events
+
+
+def _clean_patch(raw: Any, widget_type: str) -> Dict[str, str]:
+    """Keep only the display fields a row of this type has, validated like data."""
+    if not isinstance(raw, dict):
+        return {}
+
+    patch: Dict[str, str] = {}
+
+    for field in PATCH_FIELDS.get(widget_type, ()):
+        if field not in raw:
+            continue
+
+        value = str(raw[field] if raw[field] is not None else "")
+
+        if field == "tone":
+            if value in TONES:
+                patch[field] = value
+        elif field == "level":
+            if value in ALERT_LEVELS:
+                patch[field] = value
+        else:
+            patch[field] = value[: PATCH_CLIPS[field]]
+
+    return patch
+
+
+def apply_action_overlay(
+    data: Dict[str, Any], schema: Dict[str, Any], events: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Apply unacknowledged click results on top of validated data, in place.
+
+    The bot catches up on its next run and moves ``acked_seq`` past these
+    events; until then this is what keeps an ignored row from reappearing on
+    the next poll. Returns the pending events, newest last.
+    """
+    acked = int(data.get("acked_seq") or 0)
+    pending = sorted((event for event in events if event["seq"] > acked), key=lambda event: event["seq"])
+    types = {widget["id"]: widget["type"] for widget in schema.get("widgets", [])}
+
+    for event in pending:
+        result = event.get("result") if isinstance(event.get("result"), dict) else {}
+        widget_id = event.get("widget")
+        item_id = event.get("item")
+        widget_type = types.get(widget_id)
+
+        if result.get("ok") is not True or not item_id or widget_type not in PATCH_FIELDS:
+            continue
+
+        payload = data.get("widgets", {}).get(widget_id)
+
+        if not payload:
+            continue
+
+        items = payload.get("items") or []
+
+        if result.get("hide"):
+            payload["items"] = [item for item in items if item.get("id") != item_id]
+            continue
+
+        patch = _clean_patch(result.get("patch"), widget_type)
+
+        for item in items:
+            if item.get("id") == item_id:
+                item.update(patch)
+
+    return pending
+
+
+def _pending_summary(pending: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    shown = []
+
+    for event in pending[-MAX_PENDING_SHOWN:]:
+        result = event.get("result") if isinstance(event.get("result"), dict) else {}
+        shown.append(
+            {
+                "seq": event["seq"],
+                "ts": _clip(event.get("ts"), 40),
+                "button": _clip(event.get("button"), 64),
+                "widget": event.get("widget"),
+                "item": event.get("item"),
+                "ok": result.get("ok") is True,
+                "message": _clip(result.get("message"), 200),
+            }
+        )
+
+    return shown
+
+
+def resolve_script(home_dir: Path, name: str) -> Path:
+    """Map a validated script name to its file, refusing anything outside ``home/actions/``."""
+    if not SCRIPT_NAME_RE.match(name or ""):
+        raise HTTPException(status_code=400, detail=f"'{name}' is not a valid script name")
+
+    actions_dir = (home_dir / "actions").resolve()
+    target = (home_dir / "actions" / name).resolve()
+
+    if target.parent != actions_dir:
+        raise HTTPException(status_code=403, detail=f"script '{name}' resolves outside home/actions/")
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"home/actions/{name} does not exist")
+
+    if not os.access(target, os.X_OK):
+        raise HTTPException(status_code=400, detail=f"home/actions/{name} is not executable (chmod +x)")
+
+    if target.stat().st_size > MAX_SCRIPT_BYTES:
+        raise HTTPException(status_code=413, detail=f"home/actions/{name} is larger than {MAX_SCRIPT_BYTES} bytes")
+
+    return target
+
+
+def _script_digest(path: Path) -> Tuple[str, bytes]:
+    body = path.read_bytes()
+
+    return hashlib.sha256(body).hexdigest(), body
+
+
+def _approvals_root() -> Path:
+    """Where approvals live: the Hermes root, outside any one bot's Home."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "bot-hq" / "approvals"
+
+
+def _approvals_path(bot: str) -> Path:
+    return _approvals_root() / f"{bot}.json"
+
+
+def load_approvals(bot: str) -> Dict[str, str]:
+    try:
+        raw = json.loads(_approvals_path(bot).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
+def save_approval(bot: str, script: str, digest: str) -> None:
+    path = _approvals_path(bot)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    approvals = load_approvals(bot)
+    approvals[script] = digest
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(approvals, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _failure(message: str) -> Dict[str, Any]:
+    return {"ok": False, "hide": False, "patch": {}, "message": _clip(message, 200)}
+
+
+def execute_script(path: Path, payload: Dict[str, Any], home_dir: Path, widget_type: Optional[str]) -> Dict[str, Any]:
+    """Run one approved script and normalize what it printed. Never raises.
+
+    The file is executed directly — no shell — so the only thing a button can
+    name is a program the user already approved.
+    """
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(home_dir.parent)
+
+    try:
+        completed = subprocess.run(
+            [str(path)],
+            input=json.dumps(payload).encode("utf-8"),
+            capture_output=True,
+            cwd=str(home_dir),
+            env=env,
+            timeout=SCRIPT_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return _failure(f"{path.name} took longer than {SCRIPT_TIMEOUT_S}s")
+    except OSError as exc:
+        # Most often a missing shebang: "Exec format error".
+        return _failure(f"could not start {path.name}: {exc.strerror or exc}")
+
+    if completed.returncode != 0:
+        tail = completed.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:] or [""]
+
+        return _failure(f"{path.name} exited {completed.returncode}" + (f": {tail[0]}" if tail[0] else ""))
+
+    if len(completed.stdout) > MAX_SCRIPT_OUTPUT_BYTES:
+        return _failure(f"{path.name} printed more than {MAX_SCRIPT_OUTPUT_BYTES} bytes")
+
+    try:
+        raw = json.loads(completed.stdout.decode("utf-8", errors="replace"))
+    except ValueError:
+        return _failure(f"{path.name} did not print one JSON object")
+
+    if not isinstance(raw, dict):
+        return _failure(f"{path.name} did not print one JSON object")
+
+    ok = raw.get("ok") is True
+
+    return {
+        "ok": ok,
+        "hide": bool(raw.get("hide")) if ok else False,
+        "patch": _clean_patch(raw.get("patch"), widget_type or "") if ok else {},
+        "message": _clip(raw.get("message"), 200),
+    }
+
+
+def append_action_event(home_dir: Path, event: Dict[str, Any], acked_seq: int) -> Dict[str, Any]:
+    """Assign the next ``seq`` and append one line, under a lock.
+
+    ``seq`` is never reused, even after compaction empties the file: it starts
+    above both the last logged event and the bot's ``acked_seq``, otherwise a
+    new click would sort at or below the ack and never be overlaid.
+    """
+    log_path = _actions_log_path(home_dir)
+    lock_path = home_dir / ".actions.lock"
+
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+
+        try:
+            events = read_action_events(home_dir)
+            last = max((existing["seq"] for existing in events), default=0)
+            record = {"seq": max(last, acked_seq) + 1, "ts": datetime.now(timezone.utc).isoformat(), **event}
+            line = json.dumps(record, separators=(",", ":")) + "\n"
+
+            if len(events) + 1 > MAX_LOG_LINES:
+                kept = [existing for existing in events if existing["seq"] > acked_seq]
+                kept = kept[-(MAX_LOG_LINES - 1):]
+                tmp = log_path.with_suffix(".jsonl.tmp")
+                tmp.write_text(
+                    "".join(json.dumps(existing, separators=(",", ":")) + "\n" for existing in kept) + line,
+                    encoding="utf-8",
+                )
+                os.replace(tmp, log_path)
+            else:
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+    return record
+
+
+def _find_click_target(
+    home: Dict[str, Any], button_id: str, widget_id: Optional[str], item_id: Optional[str]
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Resolve ids from the page to the validated button, widget, and row.
+
+    The page sends ids only. The row body handed to the script comes from the
+    validated (and overlaid) Home, so a hidden row cannot be clicked again and
+    a client cannot invent one.
+    """
+    if not home.get("has_home"):
+        raise HTTPException(status_code=404, detail="this bot has no Home")
+
+    schema = home["schema"]
+    widget = None
+
+    if widget_id:
+        widget = next((entry for entry in schema["widgets"] if entry["id"] == widget_id), None)
+
+        if widget is None:
+            raise HTTPException(status_code=404, detail=f"no widget '{widget_id}'")
+
+        declared = widget.get("buttons") or []
+    else:
+        declared = schema.get("toolbar") or []
+
+    button = next((entry for entry in declared if entry["id"] == button_id), None)
+
+    if button is None:
+        raise HTTPException(status_code=404, detail=f"no button '{button_id}'")
+
+    if button["type"] != "run_action":
+        raise HTTPException(status_code=400, detail=f"button '{button_id}' is not a run_action")
+
+    item = None
+
+    if item_id:
+        if widget is None or widget["type"] not in PATCH_FIELDS:
+            raise HTTPException(status_code=400, detail="only list and alerts rows have line buttons")
+
+        items = (home["data"]["widgets"].get(widget["id"]) or {}).get("items") or []
+        item = next((entry for entry in items if entry.get("id") == item_id), None)
+
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"no row '{item_id}' in '{widget['id']}'")
+
+        if button_id not in (item.get("buttons") or []):
+            raise HTTPException(status_code=400, detail=f"row '{item_id}' does not offer '{button_id}'")
+
+    return button, widget, item
+
+
+def run_action_for_home(
+    bot: str, home_dir: Path, home: Dict[str, Any], button_id: str, widget_id: Optional[str], item_id: Optional[str]
+) -> Dict[str, Any]:
+    """The whole click: resolve, check approval, run, log. Raises 409 when unapproved."""
+    button, widget, item = _find_click_target(home, button_id, widget_id, item_id)
+    script = button["script"]
+    path = resolve_script(home_dir, script)
+    digest, body = _script_digest(path)
+
+    if load_approvals(bot).get(script) != digest:
+        text = body.decode("utf-8", errors="replace")
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "needs_approval": True,
+                "script": script,
+                "sha256": digest,
+                "source": text[:MAX_SCRIPT_PREVIEW_CHARS],
+                "truncated": len(text) > MAX_SCRIPT_PREVIEW_CHARS,
+            },
+        )
+
+    row = {key: value for key, value in (item or {}).items() if key != "buttons"} if item else None
+    payload = {"bot": bot, "button": button_id, "widget": widget["id"] if widget else None, "item": row}
+    result = execute_script(path, payload, home_dir, widget["type"] if widget else None)
+    record = append_action_event(
+        home_dir,
+        {
+            "widget": payload["widget"],
+            "item": item.get("id") if item else None,
+            "button": button_id,
+            "script": script,
+            "result": result,
+        },
+        int(home["data"].get("acked_seq") or 0),
+    )
+
+    return {**result, "seq": record["seq"], "notify": bool(button.get("notify")), "script": script}
 
 
 # ── Home assembly ──────────────────────────────────────────────────────────
@@ -699,6 +1118,7 @@ def read_home(bot: str) -> Dict[str, Any]:
 
     schema, warnings = validate_schema(raw_schema)
     data, data_warnings = validate_data(raw_data if raw_data is not None else {}, schema)
+    pending = apply_action_overlay(data, schema, read_action_events(home_dir))
 
     return {
         "bot": bot,
@@ -707,6 +1127,7 @@ def read_home(bot: str) -> Dict[str, Any]:
         "schema": schema,
         "data": data,
         "warnings": warnings + data_warnings,
+        "pending_actions": _pending_summary(pending),
         # Falling back to the file's mtime means a bot that forgets updated_at
         # still gets an honest "last changed" line instead of a blank one.
         "updated_at": data["updated_at"] or _mtime_iso(data_path) or _mtime_iso(schema_path),
@@ -824,6 +1245,54 @@ async def run_routine(bot: str, body: RunRoutineBody) -> Dict[str, Any]:
         "success": job.get("execution_success"),
         "skipped": job.get("execution_skipped"),
     }
+
+
+# Builtin field types only: the plugin loader may not register this module in
+# sys.modules, so pydantic cannot resolve names like ``Optional`` from its
+# string annotations at request time.
+class RunActionBody(BaseModel):
+    button_id: str
+    widget_id: str = ""
+    item_id: str = ""
+
+
+@router.post("/home/{bot}/run-action")
+def run_action(bot: str, body: RunActionBody) -> Dict[str, Any]:
+    """Run one declared ``run_action`` script for a click. No model turn.
+
+    Sync on purpose: FastAPI runs it in a worker thread, so a 30s script does
+    not stall the event loop that serves every other bot's page.
+    """
+    home_dir = _bot_home_dir(bot)
+
+    return run_action_for_home(
+        _canonical_bot(bot),
+        home_dir,
+        read_home(bot),
+        body.button_id.strip(),
+        body.widget_id.strip() or None,
+        body.item_id.strip() or None,
+    )
+
+
+class ApproveActionBody(BaseModel):
+    script: str
+    sha256: str
+
+
+@router.post("/home/{bot}/approve-action")
+async def approve_action(bot: str, body: ApproveActionBody) -> Dict[str, Any]:
+    """Record that the user accepted this exact file. A stale hash is refused."""
+    home_dir = _bot_home_dir(bot)
+    path = resolve_script(home_dir, body.script.strip())
+    digest, _ = _script_digest(path)
+
+    if digest != body.sha256.strip():
+        raise HTTPException(status_code=409, detail=f"home/actions/{path.name} changed since you reviewed it")
+
+    save_approval(_canonical_bot(bot), path.name, digest)
+
+    return {"ok": True, "script": path.name, "sha256": digest}
 
 
 def _resolve_job_id(reference: str, jobs: List[Dict[str, Any]], bot: str) -> Optional[str]:

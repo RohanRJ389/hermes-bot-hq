@@ -392,6 +392,401 @@ class FileTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 404)
 
 
+class RunActionSchemaTests(unittest.TestCase):
+    def test_run_action_keeps_script_and_notify(self):
+        schema, warnings = api.validate_schema(
+            {
+                "version": 1,
+                "widgets": [],
+                "toolbar": [
+                    {"id": "email", "label": "Send", "type": "run_action", "script": "send-digest", "notify": True},
+                    {"id": "quiet", "label": "Ignore", "type": "run_action", "script": "ignore"},
+                ],
+            }
+        )
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            [(a["script"], a["notify"]) for a in schema["toolbar"]], [("send-digest", True), ("ignore", False)]
+        )
+
+    def test_a_script_must_be_a_bare_file_name(self):
+        bad = ["", "../../bin/sh", "mail.py", "send digest", "Ignore", "-rf", "a/b", "x" * 65]
+        schema, warnings = api.validate_schema(
+            {
+                "version": 1,
+                "widgets": [],
+                "toolbar": [
+                    {"id": f"b{i}", "type": "run_action", **({"script": name} if name else {})}
+                    for i, name in enumerate(bad)
+                ],
+            }
+        )
+
+        self.assertEqual(schema["toolbar"], [])
+        self.assertEqual(len(warnings), len(bad))
+
+    def test_acked_seq_passes_through_and_bad_values_fall_back(self):
+        schema = _schema({"id": "k", "type": "kpi"})
+
+        good, warnings = api.validate_data({"acked_seq": 7}, schema)
+        self.assertEqual(good["acked_seq"], 7)
+        self.assertEqual(warnings, [])
+
+        for value in (-1, "7", True, 1.5):
+            data, warnings = api.validate_data({"acked_seq": value}, schema)
+            self.assertEqual(data["acked_seq"], 0)
+            self.assertTrue(any("acked_seq" in message for message in warnings))
+
+        missing, warnings = api.validate_data({}, schema)
+        self.assertEqual(missing["acked_seq"], 0)
+        self.assertEqual(warnings, [])
+
+
+def _issues_schema():
+    return _schema(
+        {
+            "id": "issues",
+            "type": "list",
+            "buttons": [{"id": "ignore", "label": "Ignore", "type": "run_action", "script": "ignore"}],
+        },
+        {"id": "alerts", "type": "alerts"},
+    )
+
+
+def _issues_data(schema, acked_seq=0):
+    data, _ = api.validate_data(
+        {
+            "acked_seq": acked_seq,
+            "widgets": {
+                "issues": {
+                    "items": [
+                        {"id": "api-2-disk", "title": "disk full", "tone": "bad", "buttons": ["ignore"]},
+                        {"id": "payments", "title": "timeout", "buttons": ["ignore"]},
+                    ]
+                },
+                "alerts": {"items": [{"id": "a1", "level": "warn", "message": "slow"}]},
+            },
+        },
+        schema,
+    )
+
+    return data
+
+
+def _event(seq, widget, item, **result):
+    return {"seq": seq, "widget": widget, "item": item, "button": "ignore", "result": {"ok": True, **result}}
+
+
+class OverlayTests(unittest.TestCase):
+    def test_hide_removes_the_row_until_the_bot_acks(self):
+        schema = _issues_schema()
+        events = [_event(1, "issues", "api-2-disk", hide=True)]
+
+        data = _issues_data(schema)
+        pending = api.apply_action_overlay(data, schema, events)
+        self.assertEqual([i["id"] for i in data["widgets"]["issues"]["items"]], ["payments"])
+        self.assertEqual(len(pending), 1)
+
+        # Acked but the bot kept the row: the bot's data wins.
+        acked = _issues_data(schema, acked_seq=1)
+        pending = api.apply_action_overlay(acked, schema, events)
+        self.assertEqual([i["id"] for i in acked["widgets"]["issues"]["items"]], ["api-2-disk", "payments"])
+        self.assertEqual(pending, [])
+
+    def test_patch_keeps_only_display_fields_for_that_row_type(self):
+        schema = _issues_schema()
+        data = _issues_data(schema)
+        events = [
+            _event(1, "issues", "api-2-disk", patch={"detail": "sent to on-call", "tone": "good", "url": "javascript:x", "buttons": []}),
+            _event(2, "alerts", "a1", patch={"level": "error", "tone": "good", "message": "m" * 999}),
+            _event(3, "issues", "payments", patch={"tone": "on-fire"}),
+        ]
+
+        api.apply_action_overlay(data, schema, events)
+        first, second = data["widgets"]["issues"]["items"]
+        alert = data["widgets"]["alerts"]["items"][0]
+
+        self.assertEqual((first["detail"], first["tone"], first["url"], first["buttons"]), ("sent to on-call", "good", "", ["ignore"]))
+        self.assertEqual(second["tone"], "neutral")
+        self.assertEqual(alert["level"], "error")
+        self.assertNotIn("tone", alert)
+        self.assertEqual(len(alert["message"]), api.PATCH_CLIPS["message"])
+
+    def test_failed_and_unknown_events_change_nothing(self):
+        schema = _issues_schema()
+        data = _issues_data(schema)
+        events = [
+            {"seq": 1, "widget": "issues", "item": "api-2-disk", "result": {"ok": False, "hide": True}},
+            _event(2, "nope", "api-2-disk", hide=True),
+            _event(3, "issues", None, hide=True),
+        ]
+
+        api.apply_action_overlay(data, schema, events)
+
+        self.assertEqual(len(data["widgets"]["issues"]["items"]), 2)
+
+
+def _write_script(home: Path, name: str, body: str, mode: int = 0o755) -> Path:
+    path = home / "actions" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    path.chmod(mode)
+
+    return path
+
+
+IGNORE_SCRIPT = """#!/bin/sh
+cat > "$PWD/stdin.json"
+touch "$PWD/ran"
+echo '{"ok": true, "hide": true, "message": "Ignored"}'
+"""
+
+
+class RunActionTests(unittest.TestCase):
+    """The runner end to end, against a real temp Home and real subprocesses."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        root = Path(self._dir.name)
+        self.home = root / "profiles" / "monitor" / "home"
+        self.home.mkdir(parents=True)
+        self.approvals = root / "approvals"
+
+        (self.home / "schema.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "toolbar": [{"id": "digest", "label": "Digest", "type": "run_action", "script": "digest"}],
+                    "widgets": [
+                        {
+                            "id": "issues",
+                            "type": "list",
+                            "buttons": [
+                                {"id": "ignore", "label": "Ignore", "type": "run_action", "script": "ignore"},
+                                {"id": "review", "label": "Review", "type": "send_prompt", "prompt": "x"},
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+        self._write_data()
+
+        originals = (api._bot_home_dir, api._approvals_root, api.SCRIPT_TIMEOUT_S)
+        api._bot_home_dir = lambda bot: self.home
+        api._approvals_root = lambda: self.approvals
+
+        def restore():
+            api._bot_home_dir, api._approvals_root, api.SCRIPT_TIMEOUT_S = originals
+
+        self.addCleanup(restore)
+
+    def _write_data(self, acked_seq=0, ids=("api-2-disk", "payments")):
+        items = [{"id": i, "title": f"title {i}", "buttons": ["ignore", "review"]} for i in ids]
+        (self.home / "data.json").write_text(json.dumps({"acked_seq": acked_seq, "widgets": {"issues": {"items": items}}}))
+
+    def _approve(self, name):
+        digest, _ = api._script_digest(self.home / "actions" / name)
+        api.save_approval("monitor", name, digest)
+
+    def _click(self, button="ignore", widget="issues", item="api-2-disk"):
+        return api.run_action_for_home("monitor", self.home, api.read_home("monitor"), button, widget, item)
+
+    def _log(self):
+        return api.read_action_events(self.home)
+
+    def test_an_unapproved_script_is_shown_not_run(self):
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+
+        with self.assertRaises(HTTPException) as caught:
+            self._click()
+
+        detail = caught.exception.detail
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertTrue(detail["needs_approval"])
+        self.assertIn("touch", detail["source"])
+        self.assertFalse((self.home / "ran").exists())
+        self.assertEqual(self._log(), [])
+
+    def test_an_approved_script_runs_logs_and_hides_the_row(self):
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+        self._approve("ignore")
+
+        result = self._click()
+
+        self.assertEqual((result["ok"], result["hide"], result["message"], result["seq"]), (True, True, "Ignored", 1))
+        stdin = json.loads((self.home / "stdin.json").read_text())
+        self.assertEqual(stdin["widget"], "issues")
+        self.assertEqual(stdin["item"]["id"], "api-2-disk")
+        self.assertNotIn("buttons", stdin["item"])
+
+        log = self._log()
+        self.assertEqual([(e["seq"], e["item"], e["button"], e["script"]) for e in log], [(1, "api-2-disk", "ignore", "ignore")])
+
+        home = api.read_home("monitor")
+        self.assertEqual([i["id"] for i in home["data"]["widgets"]["issues"]["items"]], ["payments"])
+        self.assertEqual(len(home["pending_actions"]), 1)
+
+        # A hidden row cannot be clicked again.
+        with self.assertRaises(HTTPException) as caught:
+            self._click()
+
+        self.assertEqual(caught.exception.status_code, 404)
+
+    def test_seq_keeps_climbing_past_the_ack(self):
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+        self._approve("ignore")
+        self._click()
+
+        self._write_data(acked_seq=5)
+        result = self._click(item="payments")
+
+        self.assertEqual(result["seq"], 6)
+        home = api.read_home("monitor")
+        self.assertEqual([i["id"] for i in home["data"]["widgets"]["issues"]["items"]], ["api-2-disk"])
+
+    def test_editing_an_approved_script_asks_again(self):
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+        self._approve("ignore")
+        _write_script(self.home, "ignore", IGNORE_SCRIPT + "rm -rf /tmp/nothing\n")
+
+        with self.assertRaises(HTTPException) as caught:
+            self._click()
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertFalse((self.home / "ran").exists())
+
+    def test_approve_route_refuses_a_stale_hash(self):
+        import asyncio
+
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(api.approve_action("monitor", api.ApproveActionBody(script="ignore", sha256="0" * 64)))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(api.load_approvals("monitor"), {})
+
+        digest, _ = api._script_digest(self.home / "actions" / "ignore")
+        asyncio.run(api.approve_action("monitor", api.ApproveActionBody(script="ignore", sha256=digest)))
+        self.assertEqual(api.load_approvals("monitor"), {"ignore": digest})
+
+    def test_a_symlink_out_of_actions_is_refused(self):
+        outside = Path(self._dir.name) / "evil"
+        outside.write_text(IGNORE_SCRIPT)
+        outside.chmod(0o755)
+        (self.home / "actions").mkdir()
+        (self.home / "actions" / "ignore").symlink_to(outside)
+
+        with self.assertRaises(HTTPException) as caught:
+            self._click()
+
+        self.assertEqual(caught.exception.status_code, 403)
+
+    def test_a_script_that_is_not_executable_is_refused(self):
+        _write_script(self.home, "ignore", IGNORE_SCRIPT, mode=0o644)
+
+        with self.assertRaises(HTTPException) as caught:
+            self._click()
+
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_only_run_action_buttons_the_row_offers_can_run(self):
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+        self._approve("ignore")
+
+        for button, widget, item, status in (
+            ("review", "issues", "api-2-disk", 400),
+            ("nope", "issues", "api-2-disk", 404),
+            ("ignore", "issues", "ghost", 404),
+            ("ignore", "missing", "api-2-disk", 404),
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                self._click(button, widget, item)
+
+            self.assertEqual(caught.exception.status_code, status, (button, widget, item))
+
+    def test_a_toolbar_click_gets_no_row(self):
+        _write_script(self.home, "digest", '#!/bin/sh\ncat > "$PWD/stdin.json"\necho \'{"ok": true}\'\n')
+        self._approve("digest")
+
+        result = self._click("digest", None, None)
+
+        self.assertTrue(result["ok"])
+        stdin = json.loads((self.home / "stdin.json").read_text())
+        self.assertEqual((stdin["widget"], stdin["item"]), (None, None))
+
+    def test_bad_runs_are_failures_and_still_logged(self):
+        cases = {
+            "exit": ("#!/bin/sh\necho oops >&2\nexit 3\n", "exited 3: oops"),
+            "garbage": ("#!/bin/sh\necho not json\n", "did not print one JSON object"),
+            "not-ok": ('#!/bin/sh\necho \'{"ok": "yes", "hide": true}\'\n', ""),
+            "slow": ("#!/bin/sh\nsleep 5\n", "longer than"),
+        }
+        api.SCRIPT_TIMEOUT_S = 1
+
+        for name, (body, expected) in cases.items():
+            schema = json.loads((self.home / "schema.json").read_text())
+            schema["toolbar"] = [{"id": name, "type": "run_action", "script": name}]
+            (self.home / "schema.json").write_text(json.dumps(schema))
+            _write_script(self.home, name, body)
+            self._approve(name)
+
+            result = self._click(name, None, None)
+
+            self.assertFalse(result["ok"], name)
+            self.assertFalse(result["hide"], name)
+            self.assertIn(expected, result["message"], name)
+
+        self.assertEqual([e["result"]["ok"] for e in self._log()], [False] * len(cases))
+
+    def test_the_routes_round_trip_over_http(self):
+        # Through FastAPI, with this module loaded from a file path the way the
+        # plugin loader does it — body models must validate in that setup, and
+        # the 409 body must be the `{"detail": {...}}` shape the page parses.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        _write_script(self.home, "ignore", IGNORE_SCRIPT)
+        app = FastAPI()
+        app.include_router(api.router, prefix="/api/plugins/hermes-bot-hq")
+        client = TestClient(app)
+        base = "/api/plugins/hermes-bot-hq/home/monitor"
+        click = {"button_id": "ignore", "widget_id": "issues", "item_id": "api-2-disk"}
+
+        refused = client.post(f"{base}/run-action", json=click)
+        self.assertEqual(refused.status_code, 409)
+        detail = refused.json()["detail"]
+        self.assertTrue(detail["needs_approval"])
+
+        approved = client.post(f"{base}/approve-action", json={"script": detail["script"], "sha256": detail["sha256"]})
+        self.assertEqual(approved.status_code, 200)
+
+        ran = client.post(f"{base}/run-action", json=click)
+        self.assertEqual(ran.status_code, 200)
+        self.assertEqual(ran.json()["message"], "Ignored")
+
+        toolbar = client.post(f"{base}/run-action", json={"button_id": "ignore"})
+        self.assertEqual(toolbar.status_code, 404)
+
+        home = client.get(base).json()
+        self.assertEqual([i["id"] for i in home["data"]["widgets"]["issues"]["items"]], ["payments"])
+
+    def test_the_log_is_compacted_without_losing_unacked_events(self):
+        lines = [json.dumps({"seq": seq, "result": {"ok": True}}) for seq in range(1, api.MAX_LOG_LINES + 1)]
+        (self.home / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+        record = api.append_action_event(self.home, {"widget": None, "item": None}, acked_seq=1500)
+        log = self._log()
+
+        self.assertEqual(record["seq"], api.MAX_LOG_LINES + 1)
+        self.assertEqual(log[0]["seq"], 1501)
+        self.assertEqual(log[-1]["seq"], api.MAX_LOG_LINES + 1)
+        self.assertLessEqual(len(log), api.MAX_LOG_LINES)
+
+
 class RoutineResolutionTests(unittest.TestCase):
     def test_a_routine_resolves_by_id_or_name_with_or_without_the_bot_prefix(self):
         jobs = [{"job_id": "abc123", "name": "[bot:researcher] Morning Digest"}]

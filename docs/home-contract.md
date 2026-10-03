@@ -36,6 +36,10 @@ Two files inside the bot's own profile directory:
 The `default` profile uses `~/.hermes/home/` instead, since that profile *is*
 the Hermes home.
 
+A Home that uses `run_action` buttons also has `home/actions/` (the bot's
+scripts) and `home/actions.jsonl` (the click log). See
+[Run actions](#run-actions).
+
 No registration call, no database. A bot joins Bot HQ by writing
 `schema.json`; a bot without one still appears in the fleet with status,
 routines, and a chat link.
@@ -89,10 +93,13 @@ on `list` / `alerts` lines. Named operations, never a shell command:
 | `open_path` | `path` | Reveals a file or folder in Finder / Explorer |
 | `open_url` | `url` | Opens `http`/`https` in the default browser |
 | `send_prompt` | `prompt` | Sends that text to the bot's Bot Chat, then refreshes |
+| `run_action` | `script`, optional `notify` | Runs `home/actions/<script>` with no chat turn, then applies its result |
 
 `prompt` is required, stripped, max 4000 characters. `job` matches a cron
 job by id, or by name (with or without Bot Mode's `[bot:<name>]` prefix).
-One button may set `primary: true`.
+`script` is a file name, not a command: 1-64 characters matching
+`^[a-z0-9][a-z0-9_-]{0,63}$`, so no dots, slashes, or spaces. See
+[Run actions](#run-actions). One button may set `primary: true`.
 
 If both `toolbar` and `actions` are present and disagree, `actions` wins so
 an upgraded Home never loses its existing strip.
@@ -112,6 +119,88 @@ HQ appends `[item id]` and `[item title]` (alerts use `message` as the
 title). Optional `{{item.id}}` / `{{item.title}}` in the schema prompt are
 substituted first. `table`, `kpi`, `markdown`, `timeseries`, and `sources`
 do not get line buttons.
+
+## Run actions
+
+A `run_action` button does a fixed side effect — ignore a row, send an
+email, write a database entry — without a model turn. The bot writes the
+program once; every click runs it.
+
+```text
+~/.hermes/profiles/<bot>/home/actions/<script>   # bot writes, executable
+~/.hermes/profiles/<bot>/home/actions.jsonl      # Bot HQ appends, bot reads
+```
+
+```json
+{ "id": "ignore", "label": "Ignore", "type": "run_action", "script": "ignore" }
+```
+
+The button's `id` is what a `data.json` line lists. Its `script` is the file
+Bot HQ runs. Any language works: Bot HQ executes the file itself, so it
+needs a shebang (`#!/usr/bin/env python3`, `#!/bin/bash`, ...) and the
+executable bit. A file that resolves outside `home/actions/` (for example
+through a symlink) is refused.
+
+**Input.** One JSON object on stdin:
+
+```json
+{
+  "bot": "monitor",
+  "button": "ignore",
+  "widget": "issues",
+  "item": { "id": "api-2-disk", "title": "disk full on api-2", "detail": "92% used", "tone": "bad" }
+}
+```
+
+`widget` and `item` are `null` for a toolbar click, and `item` is `null`
+for a `buttons` card. `item` is the validated row as Bot HQ shows it; the
+page sends only ids, and Bot HQ looks the row up itself. The script runs
+with its working directory set to `home/` and `HERMES_HOME` set to the
+bot's profile.
+
+**Output.** One JSON object on stdout:
+
+```json
+{ "ok": true, "hide": true, "message": "Ignored" }
+```
+
+| Field | Effect |
+| --- | --- |
+| `ok` | Required. Anything but `true` is a failure; the row stays as it is. |
+| `hide` | Remove the clicked row from the page. |
+| `patch` | Replace display fields on the row: `title`, `detail`, `tone` on a list line; `message`, `detail`, `level` on an alert. Other keys are dropped. |
+| `message` | Shown as a toast, max 200 characters. |
+
+A run that exits non-zero, prints anything but one JSON object, prints more
+than 64 KiB, or takes longer than 30 seconds is a failure. Failures are
+logged too.
+
+**Approval.** A script does not run until the user has read and accepted
+its current contents. The first click on a new or changed file shows the
+file on the bot's page with an **Approve** control; later clicks run
+straight away. Approvals are stored by Bot HQ outside the bot's Home, keyed
+by a hash of the file, so editing the file asks again.
+
+**The log.** Every click appends one line to `home/actions.jsonl`:
+
+```json
+{"seq": 41, "ts": "2026-08-29T07:02:11Z", "widget": "issues", "item": "api-2-disk", "button": "ignore", "script": "ignore", "result": {"ok": true, "hide": true, "patch": {}, "message": "Ignored"}}
+```
+
+`seq` only increases. Bot HQ applies `hide` and `patch` from every
+successful event newer than `acked_seq` (see `data.json`) on top of your
+data when it serves the page, so a hidden row stays hidden even before you
+next rewrite `data.json`.
+
+On your next run: read the log, skip lines that do not parse (a click may be
+mid-append), fold every event with `seq > acked_seq` into your own state,
+rewrite `data.json` to match, and set `acked_seq` to the highest `seq` you
+handled. Bot HQ never edits `schema.json` or `data.json`; `actions.jsonl` is
+the only file it writes.
+
+`notify: true` on the button also sends one short message to the bot's
+Bot Chat after a successful run, so the bot handles the log now instead of
+on its next routine. Leave it off for clicks that only need recording.
 
 ## data.json
 
@@ -145,6 +234,9 @@ do not get line buttons.
 `stale_after_minutes` (default 1440) decides when a Home is flagged **Stale**,
 which is how a dead routine becomes visible instead of a dashboard quietly
 showing last week's numbers as if they were current.
+
+`acked_seq` (integer, default `0`) is the highest `home/actions.jsonl`
+event this data already reflects. Events at or below it are not overlaid.
 
 ## Widget payloads
 

@@ -96,7 +96,8 @@ Then fully quit and reopen Hermes so that bot's backend restarts.
 
 - A fleet page: every Hermes profile, no signup or register step.
 - Per bot: status, next routine, and a dashboard the bot publishes as `home/schema.json` + `home/data.json` in its profile.
-- Buttons the bot declares (`run_routine`, `open_chat`, `open_path`, `open_url`, `send_prompt`) on the toolbar, as a `buttons` card, or on list/alert lines — plus an optional one-line composer.
+- Buttons the bot declares (`run_routine`, `open_chat`, `open_path`, `open_url`, `send_prompt`, `run_action`) on the toolbar, as a `buttons` card, or on list/alert lines — plus an optional one-line composer.
+- `run_action` buttons run a script the bot wrote in `home/actions/` with no chat turn, once you have approved that file. Clicks are logged to `home/actions.jsonl` for the bot to read on its next run.
 - The widget list is fixed on purpose, so a dashboard cannot rearrange itself overnight and no bot-authored HTML or JavaScript ever runs. Existing Homes keep their `actions` strip after upgrade.
 
 The data contract is [`docs/home-contract.md`](docs/home-contract.md). A complete file pair lives in `examples/`.
@@ -126,7 +127,7 @@ hermes-bot-hq/
 └── tests/                 # node:test for the UI, unittest for the reader
 ```
 
-The Python half exists because the gateway has no file-read RPC and a disk plugin may only import `@hermes/plugin-sdk`. `plugin_api.py` reads and validates Home files. It never writes them.
+The Python half exists because the gateway has no file-read RPC and a disk plugin may only import `@hermes/plugin-sdk`. `plugin_api.py` reads and validates Home files and runs approved `run_action` scripts. It never writes `schema.json` or `data.json`; the only Home file it writes is the click log, `home/actions.jsonl`.
 
 ## Tests
 
