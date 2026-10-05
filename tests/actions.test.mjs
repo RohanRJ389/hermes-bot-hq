@@ -322,6 +322,16 @@ test('the unpublished-Home prompt names the skill and the two files', () => {
   assert.match(HOME_BOOTSTRAP_PROMPT, /hermes-bot-hq:bot-home/)
   assert.match(HOME_BOOTSTRAP_PROMPT, /home\/schema\.json/)
   assert.match(HOME_BOOTSTRAP_PROMPT, /home\/data\.json/)
+  assert.match(HOME_BOOTSTRAP_PROMPT, /buttons\.md/)
+})
+
+test('the notify prompt says the script already did the work', () => {
+  const { notifyPromptFor } = loadPlugin()
+
+  const text = notifyPromptFor(IGNORE, ROW, { seq: 2 })
+
+  assert.match(text, /already did the work; do not repeat it/)
+  assert.match(text, /acked_seq/)
 })
 
 test('copyText writes the prompt and says so', async () => {

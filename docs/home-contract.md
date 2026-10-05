@@ -20,9 +20,16 @@ declared button. A monitoring bot (review / mark genuine / escalate) is one
 illustration, not the scope — any specialist dashboard that is an ops
 console for a fixed task uses the same pattern.
 
-Label and prompt live in `schema.json`. Daily values live in `data.json`.
-A line click concatenates the schema prompt with that item's id and title
-so the agent knows which row. Prompts never belong in `data.json`.
+Two button types act on the bot's work, and they split by who does it. A
+move that needs the bot to read, decide, or write is `send_prompt`: a model
+turn. A fixed side effect a script can do alone — ignore, mark, send, record
+— is `run_action`: no model turn, no wait. A bot should not spend a turn on
+a click whose outcome is already known.
+
+Label, prompt, and script name live in `schema.json`. Daily values live in
+`data.json`. A `send_prompt` line click concatenates the schema prompt with
+that item's id and title so the agent knows which row. Prompts never belong
+in `data.json`.
 
 ## Where it lives
 
@@ -136,7 +143,9 @@ program once; every click runs it.
 ```
 
 The button's `id` is what a `data.json` line lists. Its `script` is the file
-Bot HQ runs. Any language works: Bot HQ executes the file itself, so it
+Bot HQ runs. A script runs without the bot: it cannot call the model, the
+bot's tools, or MCP, only what is on disk and in its environment. A move that
+needs any of those is a `send_prompt`. Any language works: Bot HQ executes the file itself, so it
 needs a shebang (`#!/usr/bin/env python3`, `#!/bin/bash`, ...) and the
 executable bit. A file that resolves outside `home/actions/` (for example
 through a symlink) is refused.
@@ -192,10 +201,13 @@ successful event newer than `acked_seq` (see `data.json`) on top of your
 data when it serves the page, so a hidden row stays hidden even before you
 next rewrite `data.json`.
 
-On your next run: read the log, skip lines that do not parse (a click may be
-mid-append), fold every event with `seq > acked_seq` into your own state,
-rewrite `data.json` to match, and set `acked_seq` to the highest `seq` you
-handled. Bot HQ never edits `schema.json` or `data.json`; `actions.jsonl` is
+The log is a record, not a queue: each event already happened. On your next
+run, read the log, skip lines that do not parse (a click may be
+mid-append), and fold every event with `seq > acked_seq` into your own state
+without repeating its side effect — re-sending the email is the failure
+this rule prevents. Surface `ok: false` events (fix the script, or add an
+alert) so a failed click does not look like it worked. Then rewrite
+`data.json` to match and set `acked_seq` to the highest `seq` you handled. Bot HQ never edits `schema.json` or `data.json`; `actions.jsonl` is
 the only file it writes.
 
 `notify: true` on the button also sends one short message to the bot's

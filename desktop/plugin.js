@@ -55,7 +55,7 @@ const ACTIVE_WINDOW_S = 90
 /** Paste this in the bot's chat so it publishes a Home. Named so the skill
  *  description matches, and short enough to copy without editing. */
 const HOME_BOOTSTRAP_PROMPT =
-  'Publish a Home for yourself in Bot HQ. Load the hermes-bot-hq:bot-home skill, then write home/schema.json and home/data.json in your profile. Design the dashboard around the work you actually do, fill it with current numbers, and rewrite data.json at the end of your routines.'
+  'Publish a Home for yourself in Bot HQ. Load the hermes-bot-hq:bot-home skill, then write home/schema.json and home/data.json in your profile. Design the dashboard around the work you actually do, fill it with current numbers, and rewrite data.json at the end of your routines. For each move the user will repeat, add a button; read buttons.md in that skill to pick the type.'
 
 /** SDK `relativeTime` expects epoch **milliseconds**; cron and Home JSON hand us
  *  ISO strings (sometimes epoch seconds). A raw string produces NaN inside
@@ -1771,7 +1771,8 @@ function notifyPromptFor(action, item, result) {
 
   return [
     `Bot HQ: the "${action.label}" button ran home/actions/${action.script}${row} (event ${result?.seq ?? '?'}).`,
-    'Read home/actions.jsonl, handle every event above your acked_seq, then rewrite data.json with the new acked_seq.'
+    'The script already did the work; do not repeat it.',
+    'Read home/actions.jsonl, update what you track for every event above your acked_seq, then rewrite data.json with the new acked_seq.'
   ].join(' ')
 }
 

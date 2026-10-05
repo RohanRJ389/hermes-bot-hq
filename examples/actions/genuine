@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Mark one finding genuine. Runs on a click, with no model turn.
+
+Records the verdict in home/verdicts.json (safe to run twice for the same
+row) and marks the row good on the page. The bot reads home/actions.jsonl on
+its next run and keeps the verdict; it does not need to redo this.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+click = json.load(sys.stdin)
+item = click.get("item") or {}
+item_id = item.get("id")
+
+if not item_id:
+    json.dump({"ok": False, "message": "Genuine needs a row"}, sys.stdout)
+    sys.exit(0)
+
+verdicts_path = Path.cwd() / "verdicts.json"
+
+try:
+    verdicts = json.loads(verdicts_path.read_text())
+except (OSError, ValueError):
+    verdicts = {}
+
+verdicts[item_id] = "genuine"
+tmp = verdicts_path.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(verdicts, indent=2))
+os.replace(tmp, verdicts_path)
+
+json.dump(
+    {"ok": True, "patch": {"tone": "good", "detail": "Marked genuine"}, "message": f"Marked {item_id} genuine"},
+    sys.stdout,
+)

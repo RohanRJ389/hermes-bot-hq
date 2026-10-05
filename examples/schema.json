@@ -15,7 +15,7 @@
       "title": "Top findings",
       "width": "full",
       "buttons": [
-        { "id": "genuine", "label": "Genuine", "type": "send_prompt", "prompt": "Mark this finding genuine and update Home." },
+        { "id": "genuine", "label": "Genuine", "type": "run_action", "script": "genuine" },
         { "id": "escalate", "label": "Escalate", "type": "send_prompt", "prompt": "Escalate this finding (email the owning team) and update Home." }
       ]
     },

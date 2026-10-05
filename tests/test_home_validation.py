@@ -787,6 +787,42 @@ class RunActionTests(unittest.TestCase):
         self.assertLessEqual(len(log), api.MAX_LOG_LINES)
 
 
+class ExampleHomeTests(unittest.TestCase):
+    """The example is what bots copy, so it must validate and its script must run."""
+
+    EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+
+    def test_the_example_home_validates_cleanly(self):
+        schema, warnings = api.validate_schema(json.loads((self.EXAMPLES / "schema.json").read_text()))
+        _, data_warnings = api.validate_data(json.loads((self.EXAMPLES / "data.json").read_text()), schema)
+
+        self.assertEqual(warnings + data_warnings, [])
+        findings = next(w for w in schema["widgets"] if w["id"] == "findings")
+        genuine = next(b for b in findings["buttons"] if b["id"] == "genuine")
+        self.assertEqual((genuine["type"], genuine["script"]), ("run_action", "genuine"))
+
+    def test_the_example_script_returns_a_valid_patch_and_is_idempotent(self):
+        script = self.EXAMPLES / "actions" / "genuine"
+        click = {"bot": "me", "button": "genuine", "widget": "findings", "item": {"id": "x", "title": "t"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            first = api.execute_script(script, click, home, "list")
+            second = api.execute_script(script, click, home, "list")
+            verdicts = json.loads((home / "verdicts.json").read_text())
+
+        self.assertEqual(first, second)
+        self.assertIs(first["ok"], True)
+        self.assertIs(first["hide"], False)
+        self.assertEqual(first["patch"], {"tone": "good", "detail": "Marked genuine"})
+        self.assertEqual(verdicts, {"x": "genuine"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            no_row = api.execute_script(script, {**click, "item": None}, Path(tmp), "list")
+
+        self.assertIs(no_row["ok"], False)
+
+
 class RoutineResolutionTests(unittest.TestCase):
     def test_a_routine_resolves_by_id_or_name_with_or_without_the_bot_prefix(self):
         jobs = [{"job_id": "abc123", "name": "[bot:researcher] Morning Digest"}]

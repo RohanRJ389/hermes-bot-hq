@@ -80,12 +80,14 @@ propose the widget. Do not work around it by stuffing a table into markdown.
   above the cards. Types: `run_routine` (needs `job`), `open_chat`,
   `open_path` (needs `path`), `open_url` (needs `http(s)` `url`),
   `send_prompt` (needs `prompt`), `run_action` (needs `script`).
-- `run_action` runs a script you wrote in `home/actions/` with no chat turn —
-  use it for a fixed side effect the user will click often (ignore, send,
-  record). `send_prompt` is for clicks that need your judgment. Recipe and
-  script skeleton: `buttons.md`.
+- Pick the type per move (full chooser in `buttons.md`):
+  - needs you to read, decide, or write: `send_prompt`;
+  - a script can do all of it, clicked often: `run_action` (no chat turn);
+  - a script job you should also react to now: `run_action` + `"notify": true`.
+  A script cannot call you, your tools, or MCP.
 - Need a clickable move the user will repeat? Read `buttons.md` in this skill
-  folder. If unsure, put page-level clicks on `toolbar`. Composer still works.
+  folder. If unsure where it goes, put page-level clicks on `toolbar`.
+  Composer still works.
 - Do not put `prompt` in `data.json`. Do not rebuild schema every run.
 - `composer: true` adds a single input on your page so the user can prompt you
   without opening a chat. Set it only if a prompt is genuinely part of using
@@ -130,10 +132,11 @@ dead routine is visible rather than quietly serving last week's numbers.
 
 ## Habits
 
-- **Read your click log first.** If you have `run_action` buttons, start each
-  run by reading `home/actions.jsonl`, handle every event with `seq` above
-  your `acked_seq`, then write `data.json` with the new `acked_seq`. Details
-  in `buttons.md`.
+- **Read your click log first — record, do not redo.** If you have
+  `run_action` buttons, start each run by reading `home/actions.jsonl`. Each
+  event with `seq` above your `acked_seq` already happened: update what you
+  track (and flag `ok: false` failures), never repeat the side effect. Then
+  write `data.json` with the new `acked_seq`. Details in `buttons.md`.
 - **Update at the end of a routine.** If a scheduled run produced findings, the
   same run should rewrite `data.json`. A dashboard that only refreshes when
   asked is worse than no dashboard.
