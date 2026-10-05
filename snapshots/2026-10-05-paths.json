@@ -2,14 +2,14 @@
   {
     "path": "/RohanRJ389/hermes-bot-hq",
     "title": "Overview",
-    "count": 71,
-    "uniques": 30
+    "count": 74,
+    "uniques": 31
   },
   {
     "path": "/the-spirit-realm/hermes-bot-hq",
     "title": "Overview",
-    "count": 57,
-    "uniques": 9
+    "count": 53,
+    "uniques": 8
   },
   {
     "path": "/the-spirit-realm/hermes-bot-hq/tree/traffic",
@@ -24,10 +24,16 @@
     "uniques": 10
   },
   {
-    "path": "/the-spirit-realm/hermes-bot-hq/pulse",
+    "path": "/RohanRJ389/hermes-bot-hq/pulse",
     "title": "/pulse",
     "count": 10,
-    "uniques": 3
+    "uniques": 1
+  },
+  {
+    "path": "/RohanRJ389/hermes-bot-hq/tree/traffic",
+    "title": "/tree/traffic",
+    "count": 10,
+    "uniques": 1
   },
   {
     "path": "/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456",
@@ -42,21 +48,15 @@
     "uniques": 1
   },
   {
+    "path": "/RohanRJ389/hermes-bot-hq/graphs/traffic",
+    "title": "/graphs/traffic",
+    "count": 9,
+    "uniques": 1
+  },
+  {
     "path": "/the-spirit-realm/hermes-bot-hq/branches",
     "title": "/branches",
     "count": 8,
     "uniques": 3
-  },
-  {
-    "path": "/RohanRJ389/hermes-bot-hq/graphs/traffic",
-    "title": "/graphs/traffic",
-    "count": 8,
-    "uniques": 1
-  },
-  {
-    "path": "/RohanRJ389/hermes-bot-hq/pulse",
-    "title": "/pulse",
-    "count": 8,
-    "uniques": 1
   }
 ]
