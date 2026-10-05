@@ -1,12 +1,20 @@
 # GitHub traffic archive
 
-<!-- unique-cloners -->
+<!-- traffic-summary -->
 <div align="center">
-<font size="7"><strong>265</strong></font><br>
-<font size="5">Unique cloners</font><br>
-<sub>Sum of daily uniques, not deduplicated across days.</sub>
+<table>
+<tr>
+<td align="center"><font size="6"><strong>659</strong></font><br>Views</td>
+<td align="center"><font size="6"><strong>164</strong></font><br>Unique viewers</td>
+<td align="center"><font size="6"><strong>446</strong></font><br>Clones</td>
+<td align="center"><font size="6"><strong>265</strong></font><br>Unique cloners</td>
+</tr>
+</table>
+<sub>All-time totals. Unique counts are sums of daily uniques, not deduplicated across days.</sub><br><br>
+<a href="https://rohanrj389.github.io/hermes-bot-hq/dashboard.html"><strong>Open the interactive dashboard</strong></a><br>
+<sub>Charts by date range, plus top referrers and paths with filters. Served by GitHub Pages from this branch; opening <code>dashboard.html</code> in the file list shows source only.</sub>
 </div>
-<!-- /unique-cloners -->
+<!-- /traffic-summary -->
 
 <br>
 

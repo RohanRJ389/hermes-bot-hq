@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traffic · RohanRJ389/hermes-bot-hq</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f8fa; --border: #d0d7de; --text: #1f2328; --muted: #656d76;
+    --views: #0969da; --clones: #bc4c00; --accent: #0969da; --bar: #ddf4ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8d96a0;
+      --views: #4493f8; --clones: #f0883e; --accent: #4493f8; --bar: #12263f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  section { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 20px; }
+  .head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button { background: var(--panel); color: var(--text); border: 0; border-right: 1px solid var(--border);
+    padding: 5px 10px; font: inherit; cursor: pointer; }
+  .seg button:last-child { border-right: 0; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  select, input[type="search"] { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font: inherit; }
+  input[type="search"] { min-width: 200px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .card .value { font-size: 22px; font-weight: 600; }
+  .card .label { color: var(--muted); font-size: 12px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: 300px; }
+  .legend { display: flex; gap: 16px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; display: none; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.name { position: relative; word-break: break-all; }
+  td.name .fill { position: absolute; inset: 3px auto 3px 0; background: var(--bar); border-radius: 4px; z-index: 0; }
+  td.name .txt { position: relative; z-index: 1; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .empty { padding: 16px 8px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Traffic · <span id="repo"></span></h1>
+  <div class="muted small" id="meta"></div>
+
+  <section>
+    <div class="head">
+      <h2>Views and clones</h2>
+      <div class="controls">
+        <div class="seg" id="range" role="group" aria-label="Date range">
+          <button data-range="7">7 days</button>
+          <button data-range="14">14 days</button>
+          <button data-range="30" aria-pressed="true">30 days</button>
+          <button data-range="all">All</button>
+        </div>
+        <div class="seg" id="metric" role="group" aria-label="Metric">
+          <button data-metric="count" aria-pressed="true">Total</button>
+          <button data-metric="uniques">Unique</button>
+        </div>
+        <div class="seg" id="series" role="group" aria-label="Series">
+          <button data-series="both" aria-pressed="true">Both</button>
+          <button data-series="views">Views</button>
+          <button data-series="clones">Clones</button>
+        </div>
+      </div>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div class="chart" id="chart"><svg id="svg" role="img" aria-label="Views and clones per day"></svg><div class="tip" id="tip"></div></div>
+    <div class="legend" id="legend"></div>
+    <p class="muted small">Unique counts are sums of daily uniques, not people deduplicated across days. Days with no archived data are drawn as gaps.</p>
+  </section>
+
+  <section>
+    <div class="head">
+      <h2>Top sources</h2>
+      <div class="controls">
+        <div class="seg" id="kind" role="group" aria-label="Source type">
+          <button data-kind="referrers" aria-pressed="true">Referrers</button>
+          <button data-kind="paths">Paths</button>
+        </div>
+        <label class="small muted">Snapshot <select id="snapshot"></select></label>
+        <input type="search" id="search" placeholder="Filter by name" aria-label="Filter by name">
+        <label class="small muted">Sort <select id="sort">
+          <option value="count">Total</option>
+          <option value="uniques">Unique</option>
+        </select></label>
+      </div>
+    </div>
+    <div id="sources"></div>
+    <p class="muted small">Each snapshot is GitHub's top 10 for the 14 days ending on that date. Snapshots overlap, so they are shown one at a time instead of summed.</p>
+  </section>
+</main>
+
+<script type="application/json" id="traffic-data">{"repo":"RohanRJ389/hermes-bot-hq","generated":"2026-10-05 03:17 UTC","views":{"2026-08-20":{"count":0,"uniques":0},"2026-08-21":{"count":0,"uniques":0},"2026-08-22":{"count":0,"uniques":0},"2026-08-23":{"count":0,"uniques":0},"2026-08-24":{"count":0,"uniques":0},"2026-08-25":{"count":0,"uniques":0},"2026-08-26":{"count":0,"uniques":0},"2026-08-27":{"count":0,"uniques":0},"2026-08-28":{"count":0,"uniques":0},"2026-08-29":{"count":0,"uniques":0},"2026-08-30":{"count":0,"uniques":0},"2026-08-31":{"count":0,"uniques":0},"2026-09-01":{"count":48,"uniques":5},"2026-09-02":{"count":100,"uniques":17},"2026-09-03":{"count":110,"uniques":50},"2026-09-07":{"count":15,"uniques":7},"2026-09-08":{"count":19,"uniques":4},"2026-09-09":{"count":2,"uniques":2},"2026-09-10":{"count":1,"uniques":1},"2026-09-11":{"count":1,"uniques":1},"2026-09-12":{"count":14,"uniques":1},"2026-09-13":{"count":2,"uniques":2},"2026-09-14":{"count":7,"uniques":3},"2026-09-15":{"count":15,"uniques":4},"2026-09-16":{"count":2,"uniques":2},"2026-09-17":{"count":5,"uniques":2},"2026-09-18":{"count":8,"uniques":3},"2026-09-19":{"count":0,"uniques":0},"2026-09-20":{"count":13,"uniques":3},"2026-09-21":{"count":92,"uniques":2},"2026-09-22":{"count":34,"uniques":6},"2026-09-23":{"count":11,"uniques":4},"2026-09-24":{"count":27,"uniques":7},"2026-09-25":{"count":7,"uniques":3},"2026-09-26":{"count":11,"uniques":8},"2026-09-27":{"count":37,"uniques":6},"2026-09-28":{"count":14,"uniques":3},"2026-09-29":{"count":17,"uniques":6},"2026-09-30":{"count":24,"uniques":1},"2026-10-01":{"count":4,"uniques":2},"2026-10-02":{"count":7,"uniques":4},"2026-10-03":{"count":12,"uniques":5}},"clones":{"2026-08-20":{"count":0,"uniques":0},"2026-08-21":{"count":0,"uniques":0},"2026-08-22":{"count":0,"uniques":0},"2026-08-23":{"count":0,"uniques":0},"2026-08-24":{"count":0,"uniques":0},"2026-08-25":{"count":0,"uniques":0},"2026-08-26":{"count":0,"uniques":0},"2026-08-27":{"count":0,"uniques":0},"2026-08-28":{"count":0,"uniques":0},"2026-08-29":{"count":0,"uniques":0},"2026-08-30":{"count":0,"uniques":0},"2026-08-31":{"count":0,"uniques":0},"2026-09-01":{"count":52,"uniques":23},"2026-09-02":{"count":38,"uniques":19},"2026-09-03":{"count":35,"uniques":18},"2026-09-05":{"count":4,"uniques":4},"2026-09-06":{"count":1,"uniques":1},"2026-09-07":{"count":0,"uniques":0},"2026-09-08":{"count":4,"uniques":3},"2026-09-09":{"count":1,"uniques":1},"2026-09-10":{"count":7,"uniques":7},"2026-09-11":{"count":8,"uniques":7},"2026-09-12":{"count":1,"uniques":1},"2026-09-13":{"count":1,"uniques":1},"2026-09-14":{"count":8,"uniques":3},"2026-09-15":{"count":1,"uniques":1},"2026-09-16":{"count":2,"uniques":2},"2026-09-17":{"count":2,"uniques":2},"2026-09-18":{"count":3,"uniques":2},"2026-09-19":{"count":4,"uniques":3},"2026-09-20":{"count":6,"uniques":5},"2026-09-21":{"count":106,"uniques":49},"2026-09-22":{"count":21,"uniques":13},"2026-09-23":{"count":4,"uniques":3},"2026-09-24":{"count":11,"uniques":9},"2026-09-25":{"count":5,"uniques":5},"2026-09-26":{"count":8,"uniques":8},"2026-09-27":{"count":50,"uniques":32},"2026-09-28":{"count":4,"uniques":4},"2026-09-29":{"count":4,"uniques":4},"2026-09-30":{"count":10,"uniques":8},"2026-10-01":{"count":21,"uniques":12},"2026-10-02":{"count":9,"uniques":6},"2026-10-03":{"count":15,"uniques":9}},"snapshots":{"2026-09-21":{"referrers":[{"referrer":"github.com","count":7,"uniques":6}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":46,"uniques":23},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":13,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":7,"uniques":4},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":5,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/contributors","title":"/graphs/contributors","count":3,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":3,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":3,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/community","title":"/graphs/community","count":2,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/home-contract.md","title":"/blob/master/docs/home-contract.md","count":1,"uniques":1}]},"2026-09-22":{"referrers":[{"referrer":"github.com","count":9,"uniques":5}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":62,"uniques":17},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":12,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":11,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":8,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":4,"uniques":2}]},"2026-09-23":{"referrers":[{"referrer":"github.com","count":16,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":72,"uniques":18},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":11,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":10,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":4,"uniques":2}]},"2026-09-24":{"referrers":[{"referrer":"github.com","count":18,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":77,"uniques":19},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":11,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2}]},"2026-09-25":{"referrers":[{"referrer":"github.com","count":18,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":77,"uniques":19},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":11,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2}]},"2026-09-26":{"referrers":[{"referrer":"github.com","count":18,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":77,"uniques":19},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":11,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2}]},"2026-09-27":{"referrers":[{"referrer":"github.com","count":18,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":77,"uniques":19},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":11,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2}]},"2026-09-28":{"referrers":[{"referrer":"github.com","count":18,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":77,"uniques":19},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":11,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2}]},"2026-09-29":{"referrers":[{"referrer":"github.com","count":18,"uniques":7}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":77,"uniques":19},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":15,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":14,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":11,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/stargazers","title":"/stargazers","count":6,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":5,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulls","title":"/pulls","count":5,"uniques":2}]},"2026-09-30":{"referrers":[{"referrer":"github.com","count":25,"uniques":7},{"referrer":"babylondreams.de","count":9,"uniques":2},{"referrer":"reddit.com","count":5,"uniques":3}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":64,"uniques":12},{"path":"/RohanRJ389/hermes-bot-hq","title":"Overview","count":48,"uniques":21},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":13,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":13,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/the-spirit-realm/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":7,"uniques":1},{"path":"/RohanRJ389/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":6,"uniques":6},{"path":"/RohanRJ389/hermes-bot-hq/branches","title":"/branches","count":6,"uniques":1}]},"2026-10-01":{"referrers":[{"referrer":"github.com","count":28,"uniques":7},{"referrer":"babylondreams.de","count":9,"uniques":2},{"referrer":"reddit.com","count":5,"uniques":3}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":63,"uniques":11},{"path":"/RohanRJ389/hermes-bot-hq","title":"Overview","count":56,"uniques":21},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":13,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":13,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":1},{"path":"/RohanRJ389/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":7,"uniques":7},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":7,"uniques":1}]},"2026-10-02":{"referrers":[{"referrer":"github.com","count":28,"uniques":7},{"referrer":"babylondreams.de","count":9,"uniques":2},{"referrer":"reddit.com","count":5,"uniques":3}],"paths":[{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":61,"uniques":10},{"path":"/RohanRJ389/hermes-bot-hq","title":"Overview","count":59,"uniques":22},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":13,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":12,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":1},{"path":"/RohanRJ389/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":8,"uniques":8},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":7,"uniques":1}]},"2026-10-03":{"referrers":[{"referrer":"github.com","count":28,"uniques":7},{"referrer":"babylondreams.de","count":9,"uniques":2},{"referrer":"reddit.com","count":5,"uniques":3}],"paths":[{"path":"/RohanRJ389/hermes-bot-hq","title":"Overview","count":65,"uniques":26},{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":57,"uniques":9},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":13,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":10,"uniques":3},{"path":"/RohanRJ389/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":9,"uniques":9},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":8,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions","title":"/actions","count":7,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":7,"uniques":1}]},"2026-10-04":{"referrers":[{"referrer":"github.com","count":29,"uniques":8},{"referrer":"babylondreams.de","count":9,"uniques":2},{"referrer":"reddit.com","count":5,"uniques":3}],"paths":[{"path":"/RohanRJ389/hermes-bot-hq","title":"Overview","count":71,"uniques":30},{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":57,"uniques":9},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":13,"uniques":3},{"path":"/RohanRJ389/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":10,"uniques":10},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":10,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":8,"uniques":3},{"path":"/RohanRJ389/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":8,"uniques":1},{"path":"/RohanRJ389/hermes-bot-hq/pulse","title":"/pulse","count":8,"uniques":1}]},"2026-10-05":{"referrers":[{"referrer":"github.com","count":29,"uniques":8},{"referrer":"babylondreams.de","count":9,"uniques":2},{"referrer":"reddit.com","count":5,"uniques":3}],"paths":[{"path":"/RohanRJ389/hermes-bot-hq","title":"Overview","count":71,"uniques":30},{"path":"/the-spirit-realm/hermes-bot-hq","title":"Overview","count":57,"uniques":9},{"path":"/the-spirit-realm/hermes-bot-hq/tree/traffic","title":"/tree/traffic","count":13,"uniques":3},{"path":"/RohanRJ389/hermes-bot-hq/blob/master/docs/bot-hq-infographic.png","title":"/blob/master/docs/bot-hq-infographic.png","count":10,"uniques":10},{"path":"/the-spirit-realm/hermes-bot-hq/pulse","title":"/pulse","count":10,"uniques":3},{"path":"/the-spirit-realm/hermes-bot-hq/actions/runs/35591538456","title":"/actions/runs/35591538456","count":9,"uniques":2},{"path":"/RohanRJ389/hermes-bot-hq/branches","title":"/branches","count":9,"uniques":1},{"path":"/the-spirit-realm/hermes-bot-hq/branches","title":"/branches","count":8,"uniques":3},{"path":"/RohanRJ389/hermes-bot-hq/graphs/traffic","title":"/graphs/traffic","count":8,"uniques":1},{"path":"/RohanRJ389/hermes-bot-hq/pulse","title":"/pulse","count":8,"uniques":1}]}}}</script>
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById("traffic-data").textContent);
+  const DAY = 86400000;
+  const state = { range: "30", metric: "count", series: "both", kind: "referrers", snapshot: null, search: "", sort: "count" };
+  const COLORS = { views: "var(--views)", clones: "var(--clones)" };
+  const LABELS = { views: "Views", clones: "Clones" };
+
+  const toMs = (d) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
+  const toKey = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const fmtDate = (d, withYear) => new Date(toMs(d)).toLocaleDateString(undefined,
+    { day: "numeric", month: "short", year: withYear ? "numeric" : undefined, timeZone: "UTC" });
+  const fmtNum = (n) => n.toLocaleString();
+  const el = (tag, attrs = {}, text) => {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const svgEl = (tag, attrs = {}) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    return node;
+  };
+
+  const allDays = [...new Set([...Object.keys(DATA.views), ...Object.keys(DATA.clones)])].sort();
+  const firstDay = allDays[0];
+  const lastDay = allDays[allDays.length - 1];
+
+  document.getElementById("repo").textContent = DATA.repo;
+  document.getElementById("meta").textContent = allDays.length
+    ? `Archive ${fmtDate(firstDay, true)} to ${fmtDate(lastDay, true)} · generated ${DATA.generated}`
+    : `No traffic archived yet · generated ${DATA.generated}`;
+
+  function rangeDays() {
+    if (!allDays.length) return [];
+    const end = toMs(lastDay);
+    const start = state.range === "all" ? toMs(firstDay)
+      : Math.max(toMs(firstDay), end - (Number(state.range) - 1) * DAY);
+    const days = [];
+    for (let t = start; t <= end; t += DAY) days.push(toKey(t));
+    return days;
+  }
+
+  const value = (series, day, field) => {
+    const row = DATA[series][day];
+    return row ? Number(row[field] || 0) : null;
+  };
+
+  function renderCards(days) {
+    const cards = document.getElementById("cards");
+    cards.replaceChildren();
+    const sum = (series, field) => days.reduce((acc, d) => acc + (value(series, d, field) || 0), 0);
+    const metricName = state.metric === "count" ? "total" : "unique";
+    const peak = (series, noun) => {
+      let best = null;
+      for (const d of days) {
+        const v = value(series, d, state.metric);
+        if (v !== null && (best === null || v > best.v)) best = { d, v };
+      }
+      return best && best.v > 0
+        ? [fmtNum(best.v), `Busiest ${noun} day, ${fmtDate(best.d)} (${metricName})`]
+        : ["0", `Busiest ${noun} day (${metricName})`];
+    };
+    const covered = days.filter((d) => DATA.views[d] || DATA.clones[d]).length;
+    const items = [
+      [fmtNum(sum("views", "count")), "Views"],
+      [fmtNum(sum("views", "uniques")), "Unique viewers"],
+      [fmtNum(sum("clones", "count")), "Clones"],
+      [fmtNum(sum("clones", "uniques")), "Unique cloners"],
+      peak("views", "view"),
+      peak("clones", "clone"),
+      [`${covered} / ${days.length}`, "Days with data"],
+    ];
+    for (const [v, label] of items) {
+      const card = el("div", { class: "card" });
+      card.append(el("div", { class: "value" }, v), el("div", { class: "label" }, label));
+      cards.append(card);
+    }
+  }
+
+  function niceMax(v) {
+    const raw = Math.max(1, v / 4);
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    for (const m of [1, 2, 3, 4, 5, 6, 8, 10]) if (m * pow >= raw) return Math.max(1, Math.ceil(m * pow)) * 4;
+    return 40 * pow;
+  }
+
+  function renderChart(days) {
+    const svg = document.getElementById("svg");
+    const tip = document.getElementById("tip");
+    const box = document.getElementById("chart");
+    svg.replaceChildren();
+    tip.style.display = "none";
+    const W = Math.max(box.clientWidth, 320), H = 300;
+    const pad = { l: 44, r: 12, t: 12, b: 28 };
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const active = state.series === "both" ? ["views", "clones"] : [state.series];
+    if (!days.length) return;
+
+    let max = 0;
+    for (const s of active) for (const d of days) max = Math.max(max, value(s, d, state.metric) || 0);
+    const yMax = niceMax(max);
+    const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+    const x = (i) => pad.l + (days.length === 1 ? iw / 2 : (i * iw) / (days.length - 1));
+    const y = (v) => pad.t + ih - (v / yMax) * ih;
+
+    for (let k = 0; k <= 4; k++) {
+      const v = (yMax * k) / 4;
+      svg.append(svgEl("line", { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: "var(--border)" }));
+      const label = svgEl("text", { x: pad.l - 6, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" });
+      label.textContent = fmtNum(v);
+      svg.append(label);
+    }
+    const step = Math.max(1, Math.ceil(days.length / Math.max(2, Math.floor(iw / 70))));
+    days.forEach((d, i) => {
+      if (i % step && i !== days.length - 1) return;
+      if (i !== days.length - 1 && days.length - 1 - i < step / 2) return;
+      const anchor = days.length > 1 && i === days.length - 1 ? "end" : i === 0 && days.length > 1 ? "start" : "middle";
+      const label = svgEl("text", { x: x(i), y: H - 8, "text-anchor": anchor, "font-size": 11, fill: "var(--muted)" });
+      label.textContent = fmtDate(d);
+      svg.append(label);
+    });
+
+    for (const s of active) {
+      let path = "", pen = false;
+      days.forEach((d, i) => {
+        const v = value(s, d, state.metric);
+        if (v === null) { pen = false; return; }
+        path += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+        pen = true;
+      });
+      svg.append(svgEl("path", { d: path, fill: "none", stroke: COLORS[s], "stroke-width": 2, "stroke-linejoin": "round" }));
+      if (days.length <= 62) {
+        days.forEach((d, i) => {
+          const v = value(s, d, state.metric);
+          if (v !== null) svg.append(svgEl("circle", { cx: x(i), cy: y(v), r: 2.5, fill: COLORS[s] }));
+        });
+      }
+    }
+
+    const cursor = svgEl("line", { y1: pad.t, y2: pad.t + ih, stroke: "var(--muted)", "stroke-dasharray": "3 3", visibility: "hidden" });
+    svg.append(cursor);
+    const overlay = svgEl("rect", { x: pad.l, y: pad.t, width: iw, height: ih, fill: "transparent" });
+    svg.append(overlay);
+    overlay.addEventListener("mousemove", (ev) => {
+      const rect = svg.getBoundingClientRect();
+      const px = ((ev.clientX - rect.left) / rect.width) * W;
+      const i = days.length === 1 ? 0 : Math.min(days.length - 1, Math.max(0, Math.round(((px - pad.l) / iw) * (days.length - 1))));
+      const d = days[i];
+      cursor.setAttribute("x1", x(i)); cursor.setAttribute("x2", x(i));
+      cursor.setAttribute("visibility", "visible");
+      tip.replaceChildren(el("strong", {}, fmtDate(d, true)));
+      for (const s of active) {
+        const v = value(s, d, state.metric);
+        const line = el("div");
+        line.append(el("span", { class: "swatch", style: `background:${COLORS[s]}` }),
+          document.createTextNode(`${LABELS[s]}: ${v === null ? "no data" : fmtNum(v)}`));
+        tip.append(line);
+      }
+      tip.style.display = "block";
+      const left = (x(i) / W) * rect.width;
+      tip.style.left = `${Math.min(rect.width - tip.offsetWidth - 4, Math.max(4, left + 10))}px`;
+      tip.style.top = "8px";
+    });
+    overlay.addEventListener("mouseleave", () => { tip.style.display = "none"; cursor.setAttribute("visibility", "hidden"); });
+
+    const legend = document.getElementById("legend");
+    legend.replaceChildren();
+    for (const s of active) {
+      const item = el("span");
+      item.append(el("span", { class: "swatch", style: `background:${COLORS[s]}` }),
+        document.createTextNode(`${LABELS[s]} (${state.metric === "count" ? "total" : "unique"})`));
+      legend.append(item);
+    }
+  }
+
+  function renderTraffic() {
+    const days = rangeDays();
+    renderCards(days);
+    renderChart(days);
+  }
+
+  const snapshotDays = Object.keys(DATA.snapshots).sort().reverse();
+  const snapSelect = document.getElementById("snapshot");
+  for (const d of snapshotDays) snapSelect.append(el("option", { value: d }, fmtDate(d, true)));
+  state.snapshot = snapshotDays[0] || null;
+
+  function renderSources() {
+    const box = document.getElementById("sources");
+    box.replaceChildren();
+    if (!state.snapshot) { box.append(el("div", { class: "empty" }, "No snapshots archived yet.")); return; }
+    const isPaths = state.kind === "paths";
+    const needle = state.search.trim().toLowerCase();
+    const rows = (DATA.snapshots[state.snapshot][state.kind] || [])
+      .filter((r) => !needle || (isPaths ? `${r.path} ${r.title || ""}` : r.referrer).toLowerCase().includes(needle))
+      .sort((a, b) => (b[state.sort] - a[state.sort]) || (b.count - a.count));
+    if (!rows.length) {
+      box.append(el("div", { class: "empty" }, needle ? "No sources match this filter." : "This snapshot has no entries."));
+      return;
+    }
+    const top = Math.max(...rows.map((r) => r[state.sort]), 1);
+    const table = el("table");
+    const head = el("tr");
+    head.append(el("th", { class: "num" }, "#"), el("th", {}, isPaths ? "Path" : "Referrer"),
+      el("th", { class: "num" }, "Total"), el("th", { class: "num" }, "Unique"));
+    table.append(head);
+    rows.forEach((r, i) => {
+      const tr = el("tr");
+      const name = el("td", { class: "name" });
+      name.append(el("span", { class: "fill", style: `width:${((r[state.sort] / top) * 100).toFixed(1)}%` }));
+      const txt = el("span", { class: "txt" });
+      if (isPaths) {
+        const link = el("a", { href: `https://github.com${r.path}`, target: "_blank", rel: "noopener" }, r.path);
+        txt.append(link);
+        if (r.title && r.title !== r.path) txt.append(el("div", { class: "muted small" }, r.title));
+      } else {
+        txt.textContent = r.referrer;
+      }
+      name.append(txt);
+      tr.append(el("td", { class: "num muted" }, String(i + 1)), name,
+        el("td", { class: "num" }, fmtNum(r.count)), el("td", { class: "num" }, fmtNum(r.uniques)));
+      table.append(tr);
+    });
+    box.append(table);
+  }
+
+  function bindSeg(id, key, attr, render) {
+    const group = document.getElementById(id);
+    group.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      state[key] = btn.dataset[attr];
+      for (const b of group.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b === btn));
+      render();
+    });
+  }
+  bindSeg("range", "range", "range", renderTraffic);
+  bindSeg("metric", "metric", "metric", renderTraffic);
+  bindSeg("series", "series", "series", renderTraffic);
+  bindSeg("kind", "kind", "kind", renderSources);
+  snapSelect.addEventListener("change", () => { state.snapshot = snapSelect.value; renderSources(); });
+  document.getElementById("search").addEventListener("input", (ev) => { state.search = ev.target.value; renderSources(); });
+  document.getElementById("sort").addEventListener("change", (ev) => { state.sort = ev.target.value; renderSources(); });
+  let resizeTimer;
+  window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderTraffic, 100); });
+
+  renderTraffic();
+  renderSources();
+})();
+</script>
+</body>
+</html>
