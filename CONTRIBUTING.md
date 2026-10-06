@@ -11,12 +11,30 @@ plugin is meant to be easy to turn on.
 git clone https://github.com/the-spirit-realm/hermes-bot-hq.git ~/.hermes/plugins/hermes-bot-hq
 ```
 
-Then do [README steps 2–4](README.md#set-up): enable **Bot HQ** in Desktop
-Plugins, `hermes plugins enable hermes-bot-hq`, fully quit Hermes and reopen.
+Then follow the [README setup steps](README.md#set-up) (steps 2–4) so you are running your checkout.
 
 The desktop page hot-reloads when `desktop/plugin.js` is saved (`Cmd+K` ▸
 **Reload desktop plugins** if not). Changes under `dashboard/` need a backend
 restart — those routes mount at startup.
+
+## Layout
+
+```text
+hermes-bot-hq/
+├── plugin.yaml            # agent half — ships the skill + the setup command
+├── __init__.py            # register(ctx): registers skills/ and `hermes hermes-bot-hq`
+├── setup.py               # `hermes hermes-bot-hq setup` — onboard every bot in one step
+├── skills/bot-home/       # how a bot publishes its dashboard
+├── dashboard/
+│   ├── manifest.json      # tab hidden: this plugin's UI is the desktop half
+│   └── plugin_api.py      # reads + validates Home JSON, triggers routines
+├── desktop/plugin.js      # the Bot HQ page (plain ESM, no build step)
+├── docs/home-contract.md  # the data contract
+├── examples/              # a complete schema.json + data.json pair
+└── tests/                 # node:test for the UI, unittest for the reader
+```
+
+The Python half exists because the gateway has no file-read RPC and a disk plugin may only import `@hermes/plugin-sdk`. `plugin_api.py` reads and validates Home files. It never writes them.
 
 ## Where to change what
 

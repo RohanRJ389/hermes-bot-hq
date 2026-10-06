@@ -36,7 +36,9 @@ hermes plugins install the-spirit-realm/hermes-bot-hq
 
 **2. Turn on the page**
 
-In Hermes Desktop: **Settings → Plugins → Bot HQ**.
+In Hermes Desktop: **Capabilities → Plugins → Bot HQ** (older versions: **Settings → Plugins**). The desktop half is opt-in, so it stays off until you flip this on. Installing alone, `hermes hermes-bot-hq setup`, and **Reload desktop plugins** do not enable it.
+
+If Bot HQ is not listed, press the refresh icon on the Plugins tab, or fully quit Hermes (`Cmd+Q`) and reopen it.
 
 **3. Turn on the dashboard reader for every bot**
 
@@ -103,41 +105,7 @@ The data contract is [`docs/home-contract.md`](docs/home-contract.md). A complet
 
 ## Contribute
 
-Issues and pull requests are welcome. MIT, no CLA.
-
-Clone into `~/.hermes/plugins/hermes-bot-hq`, then do steps 2–4 above so you are running your checkout. How to map a change to a file, what the contract forbids, and ideas that would help: [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Helpful starting points: shorter setup, blinking avatars, another example Home, a better place for Bot HQ inside Hermes, the Hermes web view, or a new closed widget type.
-
-## Layout
-
-```text
-hermes-bot-hq/
-├── plugin.yaml            # agent half — ships the skill + the setup command
-├── __init__.py            # register(ctx): registers skills/ and `hermes hermes-bot-hq`
-├── setup.py               # `hermes hermes-bot-hq setup` — onboard every bot in one step
-├── skills/bot-home/       # how a bot publishes its dashboard
-├── dashboard/
-│   ├── manifest.json      # tab hidden: this plugin's UI is the desktop half
-│   └── plugin_api.py      # reads + validates Home JSON, triggers routines
-├── desktop/plugin.js      # the Bot HQ page (plain ESM, no build step)
-├── docs/home-contract.md  # the data contract
-├── examples/              # a complete schema.json + data.json pair
-└── tests/                 # node:test for the UI, unittest for the reader
-```
-
-The Python half exists because the gateway has no file-read RPC and a disk plugin may only import `@hermes/plugin-sdk`. `plugin_api.py` reads and validates Home files. It never writes them.
-
-## Tests
-
-```bash
-node --test "tests/*.test.mjs"
-
-PYTHONPATH=~/.hermes/hermes-agent \
-  ~/.hermes/hermes-agent/venv/bin/python -m unittest discover -s tests
-```
-
-The Python suite uses stdlib `unittest`, so it runs with the Hermes venv as-is.
+Issues and pull requests are welcome. MIT, no CLA. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run from a clone, where to change what, tests, and ideas that would help.
 
 ## Known limits
 
