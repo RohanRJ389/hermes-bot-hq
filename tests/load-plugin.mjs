@@ -31,6 +31,11 @@ const EXPORTED = [
   'performAction',
   'promptForButton',
   'runDeclaredButton',
+  'runAction',
+  'approvalFromError',
+  'approvePendingAction',
+  'notifyPromptFor',
+  '$pendingApproval',
   'sendPrompt',
   'refreshDashboard',
   'isCliExecTimeout',
@@ -158,10 +163,18 @@ export function loadPlugin({ requestResults = {}, restResults = {}, revealPath =
         return Promise.resolve(revealPath)
       }
     },
+    // A result may be a value, an Error (rejects), or a function of the call
+    // count so a test can script "409 first, then success".
     rest: (path, opts) => {
       restCalls.push({ path, opts })
 
-      return Promise.resolve(restResults[path] ?? {})
+      let result = restResults[path] ?? {}
+
+      if (typeof result === 'function') {
+        result = result(restCalls.filter(call => call.path === path).length, opts)
+      }
+
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
     },
     onDispose: fn => disposers.push(fn)
   })

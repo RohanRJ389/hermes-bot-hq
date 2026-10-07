@@ -139,6 +139,135 @@ test('a line send_prompt includes the item title in the query', async () => {
   assert.match(query, /disk full on api-2/)
 })
 
+const IGNORE = { id: 'ignore', label: 'Ignore', type: 'run_action', script: 'ignore' }
+const ROW = { id: 'api-2-disk', title: 'disk full on api-2', buttons: ['ignore'] }
+const RUN_PATH = '/home/monitor/run-action'
+
+function approvalError(script = 'ignore') {
+  const body = JSON.stringify({
+    detail: { needs_approval: true, script, sha256: 'abc', source: '#!/bin/sh\necho {}', truncated: false }
+  })
+
+  return new Error(`Error invoking remote method 'hermes:api': Error: 409: ${body}`)
+}
+
+test('run_action POSTs ids only, toasts the result, and refreshes without a chat turn', async () => {
+  const plugin = loadPlugin({ restResults: { [RUN_PATH]: { ok: true, hide: true, message: 'Ignored', seq: 3 } } })
+
+  await plugin.performAction('monitor', IGNORE, ROW, { widgetId: 'issues' })
+
+  assert.equal(plugin.restCalls[0].path, RUN_PATH)
+  assert.deepEqual(plugin.restCalls[0].opts.body, { button_id: 'ignore', widget_id: 'issues', item_id: 'api-2-disk' })
+  assert.deepEqual(plugin.notifications, [{ kind: 'success', message: 'Ignored' }])
+  assert.ok(plugin.invalidations.some(entry => entry.kind === 'refetch'))
+  assert.deepEqual(plugin.requests, [])
+})
+
+test('a toolbar run_action sends no widget or row', async () => {
+  const plugin = loadPlugin({ restResults: { [RUN_PATH]: { ok: true } } })
+
+  await plugin.runDeclaredButton('monitor', IGNORE, {})
+
+  assert.deepEqual(plugin.restCalls[0].opts.body, { button_id: 'ignore', widget_id: '', item_id: '' })
+})
+
+test('a failed script is reported as an error, not a success', async () => {
+  const plugin = loadPlugin({ restResults: { [RUN_PATH]: { ok: false, message: 'ignore exited 1: boom' } } })
+
+  await plugin.performAction('monitor', IGNORE, ROW, { widgetId: 'issues' })
+
+  assert.deepEqual(plugin.notifications, [{ kind: 'error', message: 'ignore exited 1: boom' }])
+})
+
+test('a 409 holds the click for review instead of running anything', async () => {
+  const plugin = loadPlugin({ restResults: { [RUN_PATH]: approvalError() } })
+
+  await plugin.performAction('monitor', IGNORE, ROW, { widgetId: 'issues' })
+
+  const pending = plugin.$pendingApproval.get()
+
+  assert.equal(pending.script, 'ignore')
+  assert.equal(pending.sha256, 'abc')
+  assert.equal(pending.bot, 'monitor')
+  assert.equal(pending.widgetId, 'issues')
+  assert.equal(plugin.notifications[0].kind, 'info')
+})
+
+test('approving stores the reviewed hash and retries the click once', async () => {
+  const plugin = loadPlugin({
+    restResults: {
+      [RUN_PATH]: count => (count === 1 ? approvalError() : { ok: true, message: 'Ignored', seq: 1 }),
+      '/home/monitor/approve-action': { ok: true }
+    }
+  })
+
+  await plugin.performAction('monitor', IGNORE, ROW, { widgetId: 'issues' })
+  await plugin.approvePendingAction()
+
+  assert.deepEqual(
+    plugin.restCalls.map(call => call.path),
+    [RUN_PATH, '/home/monitor/approve-action', RUN_PATH]
+  )
+  assert.deepEqual(plugin.restCalls[1].opts.body, { script: 'ignore', sha256: 'abc' })
+  assert.equal(plugin.$pendingApproval.get(), null)
+  assert.equal(plugin.notifications.at(-1).message, 'Ignored')
+})
+
+test('a refused approval keeps the review open', async () => {
+  const plugin = loadPlugin({
+    restResults: {
+      [RUN_PATH]: approvalError(),
+      '/home/monitor/approve-action': new Error('409: {"detail":"home/actions/ignore changed since you reviewed it"}')
+    }
+  })
+
+  await plugin.performAction('monitor', IGNORE, ROW, { widgetId: 'issues' })
+  await plugin.approvePendingAction()
+
+  assert.notEqual(plugin.$pendingApproval.get(), null)
+  assert.equal(plugin.notifications.at(-1).kind, 'error')
+  assert.equal(plugin.restCalls.length, 2)
+})
+
+test('approvalFromError ignores errors that are not approval requests', () => {
+  const { approvalFromError } = loadPlugin()
+
+  assert.equal(approvalFromError(new Error('404: {"detail":"no button"}')), null)
+  assert.equal(approvalFromError(new Error('409: {"detail":"changed since you reviewed it"}')), null)
+  assert.equal(approvalFromError(new Error('boom')), null)
+  assert.equal(approvalFromError(approvalError('send-digest')).script, 'send-digest')
+})
+
+test('notify: true tells the bot after a successful run; off by default it does not', async () => {
+  const quiet = loadPlugin({ restResults: { [RUN_PATH]: { ok: true, seq: 4 } } })
+
+  await quiet.performAction('monitor', IGNORE, ROW, { widgetId: 'issues' })
+  assert.deepEqual(quiet.requests, [])
+
+  const loud = loadPlugin({
+    restResults: { [RUN_PATH]: { ok: true, seq: 4 } },
+    requestResults: { 'cli.exec': { blocked: false, code: 0 } }
+  })
+
+  await loud.performAction('monitor', { ...IGNORE, notify: true }, ROW, { widgetId: 'issues' })
+
+  assert.equal(loud.requests[0].method, 'cli.exec')
+
+  const query = loud.requests[0].params.argv.at(-1)
+
+  assert.match(query, /home\/actions\/ignore/)
+  assert.match(query, /api-2-disk/)
+  assert.match(query, /event 4/)
+})
+
+test('notify does not fire when the script failed', async () => {
+  const plugin = loadPlugin({ restResults: { [RUN_PATH]: { ok: false, message: 'nope' } } })
+
+  await plugin.performAction('monitor', { ...IGNORE, notify: true }, ROW, { widgetId: 'issues' })
+
+  assert.deepEqual(plugin.requests, [])
+})
+
 test('the composer sends to the bot Chat and reports a refusal', async () => {
   const plugin = loadPlugin({ requestResults: { 'cli.exec': { blocked: false, code: 0, output: 'done' } } })
 
@@ -193,6 +322,16 @@ test('the unpublished-Home prompt names the skill and the two files', () => {
   assert.match(HOME_BOOTSTRAP_PROMPT, /hermes-bot-hq:bot-home/)
   assert.match(HOME_BOOTSTRAP_PROMPT, /home\/schema\.json/)
   assert.match(HOME_BOOTSTRAP_PROMPT, /home\/data\.json/)
+  assert.match(HOME_BOOTSTRAP_PROMPT, /buttons\.md/)
+})
+
+test('the notify prompt says the script already did the work', () => {
+  const { notifyPromptFor } = loadPlugin()
+
+  const text = notifyPromptFor(IGNORE, ROW, { seq: 2 })
+
+  assert.match(text, /already did the work; do not repeat it/)
+  assert.match(text, /acked_seq/)
 })
 
 test('copyText writes the prompt and says so', async () => {

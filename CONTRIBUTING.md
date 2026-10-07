@@ -34,18 +34,17 @@ hermes-bot-hq/
 └── tests/                 # node:test for the UI, unittest for the reader
 ```
 
-The Python half exists because the gateway has no file-read RPC and a disk plugin may only import `@hermes/plugin-sdk`. `plugin_api.py` reads and validates Home files. It never writes them.
+The Python half exists because the gateway has no file-read RPC and a disk plugin may only import `@hermes/plugin-sdk`. `plugin_api.py` reads and validates Home files and runs approved `run_action` scripts. It never writes `schema.json` or `data.json`; it only appends the click log `home/actions.jsonl`.
 
 ## Where to change what
 
 | You are changing | Start here | Tests |
 | --- | --- | --- |
 | Fleet page, bot detail, empty Home prompt | `desktop/plugin.js` | `tests/*.test.mjs` |
-| Home validation, REST, run-routine | `dashboard/plugin_api.py` | `tests/test_home_validation.py` |
+| Home validation, REST, run-routine, run-action | `dashboard/plugin_api.py` | `tests/test_home_validation.py` |
 | What bots are taught | `skills/bot-home/SKILL.md` (+ `buttons.md`) | keep [`docs/home-contract.md`](docs/home-contract.md) in sync |
 | Example dashboard | `examples/` | — |
 
-The Python half only reads and validates Home files. It never writes them.
 Bots publish by writing `home/schema.json` and `home/data.json` in their own
 profile.
 
@@ -60,8 +59,10 @@ These are the design, not leftover constraints:
   vocabulary stays small — a purpose-built bot has a fixed job, not a new
   UI every morning.
 - Buttons are the named verbs (`run_routine`, `open_chat`, `open_path`,
-  `open_url`, `send_prompt`). A declared `prompt` is allowed; a shell
-  command, HTML, or a prompt inside `data.json` is not. The top strip is
+  `open_url`, `send_prompt`, `run_action`). A declared `prompt` is allowed,
+  and so is a `script` that names a file in `home/actions/`; a shell command
+  string, HTML, or a prompt inside `data.json` is not. A script runs only
+  after the user approves its current contents. The top strip is
   `toolbar` (`actions` is the same list, kept so upgrades do not blank
   existing Homes).
 

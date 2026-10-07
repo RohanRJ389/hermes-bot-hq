@@ -55,7 +55,7 @@ const ACTIVE_WINDOW_S = 90
 /** Paste this in the bot's chat so it publishes a Home. Named so the skill
  *  description matches, and short enough to copy without editing. */
 const HOME_BOOTSTRAP_PROMPT =
-  'Publish a Home for yourself in Bot HQ. Load the hermes-bot-hq:bot-home skill, then write home/schema.json and home/data.json in your profile. Design the dashboard around the work you actually do, fill it with current numbers, and rewrite data.json at the end of your routines.'
+  'Publish a Home for yourself in Bot HQ. Load the hermes-bot-hq:bot-home skill, then write home/schema.json and home/data.json in your profile. Design the dashboard around the work you actually do, fill it with current numbers, and rewrite data.json at the end of your routines. For each move the user will repeat, add a button; read buttons.md in that skill to pick the type.'
 
 /** SDK `relativeTime` expects epoch **milliseconds**; cron and Home JSON hand us
  *  ISO strings (sometimes epoch seconds). A raw string produces NaN inside
@@ -86,6 +86,16 @@ let pluginCtx = null
 /** Which bot the page is showing (null = the fleet grid). Routes are a single
  *  segment with no params, so selection lives here rather than in the URL. */
 const $selectedBot = atom(null)
+
+/** A run_action click the backend refused because its script is new or
+ *  changed: `{ bot, action, item, widgetId, script, sha256, source, truncated }`.
+ *  The bot page shows it for review; null when nothing is waiting. */
+const $pendingApproval = atom(null)
+
+/** run_action clicks in flight, so a double click cannot run a script twice. */
+const runningActions = new Set()
+
+const RUN_ACTION_TIMEOUT_MS = 45_000
 
 /* ------------------------------------------------------------------ *
  * jsx helper
@@ -814,6 +824,7 @@ function ListWidget({ payload, widget, bot, processing, setProcessing, homeUpdat
           bot,
           declared,
           item,
+          widgetId: widget?.id,
           processing,
           setProcessing,
           homeUpdatedAt
@@ -1006,6 +1017,7 @@ function AlertsWidget({ payload, widget, bot, processing, setProcessing, homeUpd
           bot,
           declared,
           item,
+          widgetId: widget?.id,
           processing,
           setProcessing,
           homeUpdatedAt
@@ -1015,7 +1027,7 @@ function AlertsWidget({ payload, widget, bot, processing, setProcessing, homeUpd
   )
 }
 
-function LineButtons({ bot, declared, item, processing, setProcessing, homeUpdatedAt }) {
+function LineButtons({ bot, declared, item, widgetId, processing, setProcessing, homeUpdatedAt }) {
   const ids = item?.buttons || []
 
   if (!ids.length || !declared?.length) {
@@ -1041,7 +1053,7 @@ function LineButtons({ bot, declared, item, processing, setProcessing, homeUpdat
           size: 'sm',
           variant: action.primary ? 'default' : 'secondary',
           disabled: processing,
-          onClick: () => void runDeclaredButton(bot, action, { item, processing, setProcessing, homeUpdatedAt })
+          onClick: () => void runDeclaredButton(bot, action, { item, widgetId, processing, setProcessing, homeUpdatedAt })
         },
         action.label
       )
@@ -1056,7 +1068,7 @@ function ButtonsWidget({ widget, bot, processing, setProcessing, homeUpdatedAt }
     return h('div', { className: 'text-xs', style: { color: 'var(--ui-text-tertiary)' } }, 'no buttons')
   }
 
-  return h(ButtonStrip, { bot, buttons, processing, setProcessing, homeUpdatedAt })
+  return h(ButtonStrip, { bot, buttons, widgetId: widget?.id, processing, setProcessing, homeUpdatedAt })
 }
 
 const WIDGETS = {
@@ -1293,6 +1305,12 @@ function UpdatedLine({ home }) {
     parts.push(data.note)
   }
 
+  const pending = (home?.pending_actions || []).length
+
+  if (pending) {
+    parts.push(`${pending} ${pending === 1 ? 'click' : 'clicks'} not yet seen by the bot`)
+  }
+
   if (!parts.length) {
     return null
   }
@@ -1302,7 +1320,8 @@ function UpdatedLine({ home }) {
 
 /** The page toolbar. Same strip as `schema.actions` (kept so upgrades do not
  *  blank existing Homes) or `schema.toolbar`. Verbs are closed; a send_prompt
- *  button carries declared text, not a shell. */
+ *  button carries declared text and a run_action button names an approved
+ *  file, never a shell string. */
 function Toolbar({ bot, buttons, processing, setProcessing, homeUpdatedAt }) {
   if (!buttons?.length) {
     return null
@@ -1311,7 +1330,7 @@ function Toolbar({ bot, buttons, processing, setProcessing, homeUpdatedAt }) {
   return h(ButtonStrip, { bot, buttons, processing, setProcessing, homeUpdatedAt })
 }
 
-function ButtonStrip({ bot, buttons, processing, setProcessing, homeUpdatedAt }) {
+function ButtonStrip({ bot, buttons, widgetId, processing, setProcessing, homeUpdatedAt }) {
   const [running, setRunning] = useState('')
 
   const run = async action => {
@@ -1319,7 +1338,7 @@ function ButtonStrip({ bot, buttons, processing, setProcessing, homeUpdatedAt })
     setRunning(action.id)
 
     try {
-      await runDeclaredButton(bot, action, { processing, setProcessing, homeUpdatedAt })
+      await runDeclaredButton(bot, action, { widgetId, processing, setProcessing, homeUpdatedAt })
     } finally {
       setRunning('')
     }
@@ -1402,6 +1421,77 @@ function Composer({ bot, processing, setProcessing, homeUpdatedAt }) {
           'Updating this dashboard…'
         )
       : null
+  )
+}
+
+/** The review step for a new or changed run_action script. Nothing runs until
+ *  the user has seen this exact file and approved it. */
+function ApprovalPanel({ bot }) {
+  const pending = useValue($pendingApproval)
+  const [busy, setBusy] = useState(false)
+
+  if (!pending || pending.bot !== bot) {
+    return null
+  }
+
+  const approve = async () => {
+    haptic('tap')
+    setBusy(true)
+
+    try {
+      await approvePendingAction()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return h(
+    'div',
+    {
+      className: 'flex flex-col gap-3 rounded-lg border px-4 py-4',
+      style: { borderColor: 'var(--ui-accent)' }
+    },
+    h(
+      'div',
+      { className: 'flex items-center gap-2' },
+      h(StatusDot, { tone: 'warn' }),
+      h('span', { className: 'flex-1 text-sm font-medium' }, `Review home/actions/${pending.script}`)
+    ),
+    h(
+      'div',
+      { className: 'text-xs', style: { color: 'var(--ui-text-tertiary)' } },
+      `"${pending.action?.label || pending.script}" runs this file on your machine with no chat turn. It runs only after you approve it, and asks again if the file changes.`
+    ),
+    h(
+      'pre',
+      {
+        className: 'max-h-80 overflow-auto whitespace-pre rounded-md border px-3 py-2 text-[0.6875rem] leading-5',
+        style: { borderColor: 'var(--ui-stroke-secondary)', color: 'var(--ui-text-primary)' }
+      },
+      pending.source || ''
+    ),
+    pending.truncated
+      ? h(
+          'div',
+          { className: 'text-[0.6875rem]', style: { color: 'var(--ui-text-tertiary)' } },
+          'Preview truncated. Open the file to read all of it before approving.'
+        )
+      : null,
+    h(
+      'div',
+      { className: 'flex flex-wrap items-center gap-2' },
+      h(Button, { size: 'sm', disabled: busy, onClick: () => void approve() }, busy ? 'Running…' : 'Approve and run'),
+      h(
+        Button,
+        {
+          size: 'sm',
+          variant: 'secondary',
+          disabled: busy,
+          onClick: () => $pendingApproval.set(null)
+        },
+        'Cancel'
+      )
+    )
   )
 }
 
@@ -1511,6 +1601,7 @@ function BotDetail({ bot }) {
         payload?.schema?.composer
           ? h(Composer, { bot, processing, setProcessing, homeUpdatedAt: payload?.updated_at })
           : null,
+        h(ApprovalPanel, { bot }),
         h(WarningsPanel, { warnings: payload?.warnings }),
         !home.isLoading && !home.isError && !payload ? h(MissingHome, { bot, label: row.label }) : null,
         widgets.length
@@ -1582,8 +1673,13 @@ async function openExternal(url) {
 
 /** Execute one declared button. The `type` switch is the whole security model:
  *  a Home describes what it wants, and only these verbs exist. */
-async function performAction(bot, action, item) {
+async function performAction(bot, action, item, { widgetId } = {}) {
   try {
+    if (action.type === 'run_action') {
+      await runAction(bot, action, { item, widgetId })
+      return
+    }
+
     if (action.type === 'send_prompt') {
       await sendPrompt(bot, promptForButton(action, item))
       return
@@ -1632,7 +1728,7 @@ function promptForButton(action, item) {
   return `${text.trim()}\n\n[item id: ${id}]\n[item title: ${title}]`.trim()
 }
 
-async function runDeclaredButton(bot, action, { item, processing, setProcessing, homeUpdatedAt } = {}) {
+async function runDeclaredButton(bot, action, { item, widgetId, processing, setProcessing, homeUpdatedAt } = {}) {
   if (action.type === 'send_prompt') {
     const prompt = promptForButton(action, item)
 
@@ -1644,7 +1740,123 @@ async function runDeclaredButton(bot, action, { item, processing, setProcessing,
     return
   }
 
-  await performAction(bot, action, item)
+  await performAction(bot, action, item, { widgetId })
+}
+
+/** The approval payload a 409 from run-action carries, or null.
+ *
+ *  `ctx.rest` rejects a non-2xx reply with `Error("409: <json body>")`, and
+ *  Electron IPC may prefix that message, so the body is found by its status
+ *  marker rather than assumed to start the string. */
+function approvalFromError(error) {
+  const text = String(error?.message || error || '')
+  const match = text.match(/409:\s*(\{[\s\S]*\})\s*$/)
+
+  if (!match) {
+    return null
+  }
+
+  try {
+    const detail = JSON.parse(match[1])?.detail
+
+    return detail && detail.needs_approval && detail.script && detail.sha256 ? detail : null
+  } catch {
+    return null
+  }
+}
+
+/** The one message a `notify: true` button sends after its script succeeds. */
+function notifyPromptFor(action, item, result) {
+  const row = item?.id ? ` on row "${item.title || item.message || item.id}" (${item.id})` : ''
+
+  return [
+    `Bot HQ: the "${action.label}" button ran home/actions/${action.script}${row} (event ${result?.seq ?? '?'}).`,
+    'The script already did the work; do not repeat it.',
+    'Read home/actions.jsonl, update what you track for every event above your acked_seq, then rewrite data.json with the new acked_seq.'
+  ].join(' ')
+}
+
+/** Run one `run_action` click through the backend. No model turn, no composer
+ *  "Working" state: the script's result is applied by refetching the Home. */
+async function runAction(bot, action, { item = null, widgetId = null } = {}) {
+  const key = `${bot}:${widgetId || ''}:${item?.id || ''}:${action.id}`
+
+  if (runningActions.has(key)) {
+    return null
+  }
+
+  runningActions.add(key)
+
+  try {
+    let result
+
+    try {
+      result = await pluginCtx.rest(`/home/${encodeURIComponent(bot)}/run-action`, {
+        method: 'POST',
+        body: { button_id: action.id, widget_id: widgetId || '', item_id: item?.id || '' },
+        timeoutMs: RUN_ACTION_TIMEOUT_MS
+      })
+    } catch (error) {
+      const approval = approvalFromError(error)
+
+      if (!approval) {
+        throw error
+      }
+
+      $pendingApproval.set({ ...approval, bot, action, item, widgetId })
+      host.notify({ kind: 'info', message: `Review ${approval.script} before it runs` })
+
+      return null
+    }
+
+    if (result?.ok) {
+      host.notify({ kind: 'success', message: result.message || `${action.label} done` })
+    } else {
+      host.notify({ kind: 'error', message: result?.message || `${action.label} failed` })
+    }
+
+    await refreshDashboard(bot)
+
+    if (result?.ok && action.notify) {
+      // Not awaited: the bot's turn can take minutes and the click is already done.
+      sendPrompt(bot, notifyPromptFor(action, item, result)).catch(error => {
+        if (!isCliExecTimeout(error)) {
+          host.notifyError(error, `${action.label} ran, but ${bot} could not be told`)
+        }
+      })
+    }
+
+    return result
+  } finally {
+    runningActions.delete(key)
+  }
+}
+
+/** Accept the reviewed script, then retry the click that asked for it. */
+async function approvePendingAction() {
+  const pending = $pendingApproval.get()
+
+  if (!pending) {
+    return
+  }
+
+  try {
+    await pluginCtx.rest(`/home/${encodeURIComponent(pending.bot)}/approve-action`, {
+      method: 'POST',
+      body: { script: pending.script, sha256: pending.sha256 }
+    })
+  } catch (error) {
+    host.notifyError(error, `Could not approve ${pending.script}`)
+    return
+  }
+
+  $pendingApproval.set(null)
+
+  try {
+    await runAction(pending.bot, pending.action, { item: pending.item, widgetId: pending.widgetId })
+  } catch (error) {
+    host.notifyError(error, `${pending.action.label} failed`)
+  }
 }
 
 /** Trigger a routine through the plugin's own backend.
