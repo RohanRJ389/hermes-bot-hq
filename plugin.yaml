@@ -1,5 +1,5 @@
 name: hermes-bot-hq
-version: 0.1.0
+version: 0.4.0
 description: >-
   Bot HQ for Hermes bots — a fleet page in the desktop app plus
   per-bot dashboards published by the bots themselves.

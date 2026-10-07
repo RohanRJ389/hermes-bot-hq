@@ -3,7 +3,7 @@
   "label": "Bot HQ",
   "description": "Fleet view of every bot plus per-bot dashboards published by the bots themselves.",
   "icon": "LayoutDashboard",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "api": "plugin_api.py",
   "tab": { "hidden": true }
 }
