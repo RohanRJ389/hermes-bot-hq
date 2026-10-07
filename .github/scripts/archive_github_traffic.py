@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import sys
@@ -22,8 +23,12 @@ README_SOURCES = (
     "(estimated). 5–6 Sep clone uniques from a screenshot (count stored as uniques). "
     "4 Sep and 5–6 Sep views are a gap, not zero._\n"
 )
-SUMMARY_START = "<!-- unique-cloners -->"
-SUMMARY_END = "<!-- /unique-cloners -->"
+SUMMARY_START = "<!-- traffic-summary -->"
+SUMMARY_END = "<!-- /traffic-summary -->"
+DASHBOARD_FILE = "dashboard.html"
+DASHBOARD_TEMPLATE = Path(__file__).with_name("traffic_dashboard.html")
+DATA_PLACEHOLDER = "__TRAFFIC_DATA__"
+TITLE_PLACEHOLDER = "__TRAFFIC_TITLE__"
 
 
 def api_get(repo: str, path: str, token: str):
@@ -74,30 +79,48 @@ def upsert_series(existing: dict, payload: dict, series_key: str) -> dict:
     return dict(sorted(merged.items()))
 
 
-def sum_daily_uniques(series: dict) -> int:
+def sum_daily(series: dict, field: str) -> int:
     total = 0
     for row in series.values():
         if isinstance(row, dict):
-            total += int(row.get("uniques") or 0)
+            total += int(row.get(field) or 0)
     return total
 
 
-def unique_cloners_block(total: int) -> str:
+def pages_url(repo: str) -> str:
+    owner, _, name = repo.partition("/")
+    return f"https://{owner.lower()}.github.io/{name}/{DASHBOARD_FILE}"
+
+
+def summary_block(views: dict, clones: dict, dashboard_url: str) -> str:
+    stats = [
+        (sum_daily(views, "count"), "Views"),
+        (sum_daily(views, "uniques"), "Unique viewers"),
+        (sum_daily(clones, "count"), "Clones"),
+        (sum_daily(clones, "uniques"), "Unique cloners"),
+    ]
+    cells = "".join(
+        f'<td align="center"><font size="6"><strong>{value:,}</strong></font><br>{label}</td>\n'
+        for value, label in stats
+    )
     return (
         f"{SUMMARY_START}\n"
         f'<div align="center">\n'
-        f'<font size="7"><strong>{total:,}</strong></font><br>\n'
-        f'<font size="5">Unique cloners</font><br>\n'
-        f"<sub>Sum of daily uniques, not deduplicated across days.</sub>\n"
+        f"<table>\n<tr>\n{cells}</tr>\n</table>\n"
+        f"<sub>All-time totals. Unique counts are sums of daily uniques, not deduplicated across days.</sub><br><br>\n"
+        f'<a href="{html.escape(dashboard_url)}"><strong>Open the interactive dashboard</strong></a><br>\n'
+        f"<sub>Charts by date range, plus top referrers and paths with filters. "
+        f"Served by GitHub Pages from this branch; opening <code>{DASHBOARD_FILE}</code> "
+        f"in the file list shows source only.</sub>\n"
         f"</div>\n"
         f"{SUMMARY_END}\n"
     )
 
 
-def upsert_readme(path: Path, clones: dict) -> None:
+def upsert_readme(path: Path, views: dict, clones: dict, dashboard_url: str) -> None:
     parts = [
         "# GitHub traffic archive\n",
-        unique_cloners_block(sum_daily_uniques(clones)),
+        summary_block(views, clones, dashboard_url),
         "<br>\n",
         README_INTRO,
         README_SOURCES,
@@ -106,6 +129,37 @@ def upsert_readme(path: Path, clones: dict) -> None:
     if not text.endswith("\n"):
         text += "\n"
     path.write_text(text, encoding="utf-8")
+
+
+def load_snapshots(snapshot_dir: Path) -> dict:
+    snapshots: dict[str, dict] = {}
+    if not snapshot_dir.is_dir():
+        return snapshots
+    for kind in ("referrers", "paths"):
+        for file in sorted(snapshot_dir.glob(f"*-{kind}.json")):
+            day = file.name[:10]
+            with file.open(encoding="utf-8") as fh:
+                rows = json.load(fh)
+            if isinstance(rows, list):
+                snapshots.setdefault(day, {"referrers": [], "paths": []})[kind] = rows
+    return dict(sorted(snapshots.items()))
+
+
+def write_dashboard(out: Path, repo: str, views: dict, clones: dict) -> None:
+    data = {
+        "repo": repo,
+        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "views": views,
+        "clones": clones,
+        "snapshots": load_snapshots(out / "snapshots"),
+    }
+    # "<" is escaped so path or referrer strings cannot close the <script> tag.
+    payload = json.dumps(data, separators=(",", ":")).replace("<", "\\u003c")
+    template = DASHBOARD_TEMPLATE.read_text(encoding="utf-8")
+    page = template.replace(TITLE_PLACEHOLDER, html.escape(repo)).replace(
+        DATA_PLACEHOLDER, payload
+    )
+    (out / DASHBOARD_FILE).write_text(page, encoding="utf-8")
 
 
 def main() -> None:
@@ -124,13 +178,15 @@ def main() -> None:
     referrers = api_get(repo, "/traffic/popular/referrers", token)
     paths = api_get(repo, "/traffic/popular/paths", token)
 
-    dump_json(out / "views.json", upsert_series(load_json(out / "views.json"), views, "views"))
+    views_series = upsert_series(load_json(out / "views.json"), views, "views")
+    dump_json(out / "views.json", views_series)
     clones_series = upsert_series(load_json(out / "clones.json"), clones, "clones")
     dump_json(out / "clones.json", clones_series)
     dump_json(out / "snapshots" / f"{today}-referrers.json", referrers)
     dump_json(out / "snapshots" / f"{today}-paths.json", paths)
 
-    upsert_readme(out / "README.md", clones_series)
+    upsert_readme(out / "README.md", views_series, clones_series, pages_url(repo))
+    write_dashboard(out, repo, views_series, clones_series)
 
 
 if __name__ == "__main__":
