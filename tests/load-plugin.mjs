@@ -30,6 +30,7 @@ const EXPORTED = [
   'routineSummary',
   'performAction',
   'promptForButton',
+  'buttonTitle',
   'runDeclaredButton',
   'runAction',
   'approvalFromError',

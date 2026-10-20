@@ -31,7 +31,7 @@ Do these in order. Skip nothing; the page and the dashboard reader are separate 
 **1. Install the plugin**
 
 ```bash
-hermes plugins install the-spirit-realm/hermes-bot-hq
+hermes plugins install RohanRJ389/hermes-bot-hq
 ```
 
 **2. Turn on the page**
@@ -46,7 +46,7 @@ If Bot HQ is not listed, press the refresh icon on the Plugins tab, or fully qui
 hermes hermes-bot-hq setup
 ```
 
-Sets it up on all your bots at once (and restarts what it needs to). Run it again any time you add a new bot — it only touches the ones that need it.
+Sets it up on all your bots at once. Run it again any time you add a new bot — it only touches the ones that need it. It does not restart anything: if a bot's Home then says **Home unreadable**, fully quit Hermes (`Cmd+Q`) and reopen it.
 
 Prefer to do it by hand for one bot? See [Manual setup](#manual-setup).
 
@@ -80,7 +80,7 @@ hermes cron edit <job-id> --add-skill hermes-bot-hq:bot-home
 
 ## Other ways to install
 
-- **From Desktop, no terminal:** paste `hermes://plugin/install?repo=the-spirit-realm/hermes-bot-hq` into Hermes. That is an install link the app handles, not a website.
+- **From Desktop, no terminal:** paste `hermes://plugin/install?repo=RohanRJ389/hermes-bot-hq` into Hermes. That is an install link the app handles, not a website.
 - **From a git clone:** put the repo at `~/.hermes/plugins/hermes-bot-hq`, then do steps 2–4 above.
 
 ## Manual setup

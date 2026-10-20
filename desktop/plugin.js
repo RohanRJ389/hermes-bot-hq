@@ -1046,16 +1046,19 @@ function LineButtons({ bot, declared, item, widgetId, processing, setProcessing,
     'div',
     { className: 'flex shrink-0 flex-wrap justify-end gap-1' },
     ...buttons.map(action =>
-      h(
-        Button,
-        {
-          key: action.id,
-          size: 'sm',
-          variant: action.primary ? 'default' : 'secondary',
-          disabled: processing,
-          onClick: () => void runDeclaredButton(bot, action, { item, widgetId, processing, setProcessing, homeUpdatedAt })
-        },
-        action.label
+      withPromptTip(
+        action,
+        item,
+        h(
+          Button,
+          {
+            size: 'sm',
+            variant: action.primary ? 'default' : 'secondary',
+            disabled: processing,
+            onClick: () => void runDeclaredButton(bot, action, { item, widgetId, processing, setProcessing, homeUpdatedAt })
+          },
+          action.label
+        )
       )
     )
   )
@@ -1348,16 +1351,19 @@ function ButtonStrip({ bot, buttons, widgetId, processing, setProcessing, homeUp
     'div',
     { className: 'flex flex-wrap items-center gap-2' },
     ...buttons.map(action =>
-      h(
-        Button,
-        {
-          key: action.id,
-          size: 'sm',
-          variant: action.primary ? 'default' : 'secondary',
-          disabled: processing || running === action.id,
-          onClick: () => void run(action)
-        },
-        running === action.id ? 'Running…' : action.label
+      withPromptTip(
+        action,
+        null,
+        h(
+          Button,
+          {
+            size: 'sm',
+            variant: action.primary ? 'default' : 'secondary',
+            disabled: processing || running === action.id,
+            onClick: () => void run(action)
+          },
+          running === action.id ? 'Running…' : action.label
+        )
       )
     )
   )
@@ -1728,6 +1734,32 @@ function promptForButton(action, item) {
   return `${text.trim()}\n\n[item id: ${id}]\n[item title: ${title}]`.trim()
 }
 
+/** Hover text for a declared button. A send_prompt shows the exact prompt it
+ *  will send, row values included, so a click never sends unseen text. */
+function buttonTitle(action, item) {
+  if (action?.type !== 'send_prompt') {
+    return undefined
+  }
+
+  return `Sends to the bot:\n\n${promptForButton(action, item)}`
+}
+
+/** Wrap a declared button in the app's `Tip`, not a native `title`: Electron
+ *  often will not reshow a native tooltip on a second hover. Buttons without a
+ *  tip render bare (`Tip` passes children through on a falsy label). */
+function withPromptTip(action, item, button) {
+  const text = buttonTitle(action, item)
+
+  return h(
+    Tip,
+    {
+      key: action.id,
+      label: text ? h('div', { className: 'max-w-sm whitespace-pre-wrap break-words text-left' }, text) : null
+    },
+    button
+  )
+}
+
 async function runDeclaredButton(bot, action, { item, widgetId, processing, setProcessing, homeUpdatedAt } = {}) {
   if (action.type === 'send_prompt') {
     const prompt = promptForButton(action, item)
@@ -1871,16 +1903,28 @@ async function runRoutine(bot, job) {
     timeoutMs: 300_000
   })
 
+  queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] })
+
+  const name = result?.name || job
+
+  // The run started but did not complete (e.g. the bot's provider is not
+  // configured). "finished" would be a lie, so show the reason.
+  if (result?.executed && result?.success === false) {
+    host.notifyError(new Error(String(result.error || 'the run did not complete').slice(0, 400)), `${name} failed`)
+
+    return
+  }
+
   host.notify({
     kind: 'success',
     message: result?.background
-      ? `${result.name || job} is running in the background`
+      ? `${name} is running in the background`
       : result?.executed
-        ? `${result.name || job} finished`
-        : `${result.name || job} will run on the next tick`
+        ? `${name} finished`
+        : result?.skipped
+          ? `${name} was not started: ${result.skipped}`
+          : `${name} will run on the next tick`
   })
-
-  queryClient.invalidateQueries({ queryKey: [PLUGIN_ID] })
 }
 
 /** Re-read roster, routines, and this bot's Home. Invalidate is enough for

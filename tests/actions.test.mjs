@@ -31,6 +31,32 @@ test('a backgrounded run says so instead of claiming it finished', async () => {
   assert.match(plugin.notifications[0].message, /background/)
 })
 
+test('a run that started but failed reports the failure, never "finished"', async () => {
+  const plugin = loadPlugin({
+    restResults: {
+      '/home/bot/run-routine': { ok: true, name: 'Scout', executed: true, success: false, error: 'provider credential missing' }
+    }
+  })
+
+  await plugin.runRoutine('bot', 'Scout')
+
+  assert.equal(plugin.notifications.length, 1)
+  assert.equal(plugin.notifications[0].kind, 'error')
+  assert.match(plugin.notifications[0].message, /Scout failed/)
+  assert.match(plugin.notifications[0].error.message, /provider credential missing/)
+  assert.ok(plugin.invalidations.length)
+})
+
+test('a run the scheduler refused says it was not started', async () => {
+  const plugin = loadPlugin({
+    restResults: { '/home/bot/run-routine': { ok: true, name: 'Scout', executed: false, skipped: 'Already being fired' } }
+  })
+
+  await plugin.runRoutine('bot', 'Scout')
+
+  assert.match(plugin.notifications[0].message, /not started: Already being fired/)
+})
+
 test('open_url and open_path use the OS door, not a navigation', async () => {
   const plugin = loadPlugin()
 
@@ -122,6 +148,16 @@ test('a line click fills template slots then still appends the item', () => {
 
   assert.match(sent, /Escalate disk full on api-2 \(api-2-disk\)\./)
   assert.match(sent, /\[item id: api-2-disk\]/)
+})
+
+test('a send_prompt button shows the exact prompt it will send, row values included', () => {
+  const { buttonTitle, promptForButton } = loadPlugin()
+  const action = { type: 'send_prompt', prompt: 'Escalate {{item.title}}.' }
+  const item = { id: 'api-2-disk', title: 'disk full on api-2' }
+
+  assert.ok(buttonTitle(action, item).endsWith(promptForButton(action, item)))
+  assert.match(buttonTitle(action, item), /\[item title: disk full on api-2\]/)
+  assert.equal(buttonTitle({ type: 'open_chat' }), undefined)
 })
 
 test('a line send_prompt includes the item title in the query', async () => {

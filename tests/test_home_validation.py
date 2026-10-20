@@ -659,18 +659,16 @@ class RunActionTests(unittest.TestCase):
         self.assertFalse((self.home / "ran").exists())
 
     def test_approve_route_refuses_a_stale_hash(self):
-        import asyncio
-
         _write_script(self.home, "ignore", IGNORE_SCRIPT)
 
         with self.assertRaises(HTTPException) as caught:
-            asyncio.run(api.approve_action("monitor", api.ApproveActionBody(script="ignore", sha256="0" * 64)))
+            api.approve_action("monitor", api.ApproveActionBody(script="ignore", sha256="0" * 64))
 
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(api.load_approvals("monitor"), {})
 
         digest, _ = api._script_digest(self.home / "actions" / "ignore")
-        asyncio.run(api.approve_action("monitor", api.ApproveActionBody(script="ignore", sha256=digest)))
+        api.approve_action("monitor", api.ApproveActionBody(script="ignore", sha256=digest))
         self.assertEqual(api.load_approvals("monitor"), {"ignore": digest})
 
     def test_a_symlink_out_of_actions_is_refused(self):
@@ -831,6 +829,80 @@ class RoutineResolutionTests(unittest.TestCase):
             self.assertEqual(api._resolve_job_id(reference, jobs, "researcher"), "abc123")
 
         self.assertIsNone(api._resolve_job_id("Evening Digest", jobs, "researcher"))
+
+    def test_a_manual_run_is_sync_and_runs_inside_the_bots_profile_scope(self):
+        import inspect
+        from contextlib import contextmanager
+        from unittest import mock
+
+        self.assertFalse(inspect.iscoroutinefunction(api.run_routine))
+
+        scopes = []
+        calls = []
+
+        @contextmanager
+        def fake_scope(profile):
+            scopes.append(profile)
+            yield
+            scopes.append(None)
+
+        def fake_cronjob(action, **kwargs):
+            calls.append((action, list(scopes)))
+            if action == "list":
+                return json.dumps({"jobs": [{"job_id": "abc123", "name": "Morning Digest"}]})
+            return json.dumps({"success": True, "job": {"name": "Morning Digest", "executed": True}})
+
+        with (
+            mock.patch.object(api, "_bot_home_dir", lambda bot: Path("/unused")),
+            mock.patch.object(api, "_canonical_bot", lambda bot: bot.lower()),
+            mock.patch("hermes_cli.web_server_profiles._config_profile_scope", fake_scope),
+            mock.patch("tools.cronjob_tools.cronjob", fake_cronjob),
+        ):
+            result = api.run_routine("Researcher", api.RunRoutineBody(job="morning digest"))
+
+        self.assertEqual(result["job_id"], "abc123")
+        self.assertEqual(calls, [("list", ["researcher"]), ("run", ["researcher"])])
+        self.assertEqual(scopes, ["researcher", None])
+        self.assertIsNone(result["error"])
+
+    def test_a_failed_run_carries_its_reason_and_a_good_run_ignores_stale_errors(self):
+        from contextlib import nullcontext
+        from unittest import mock
+
+        def run_with(job):
+            def fake_cronjob(action, **kwargs):
+                if action == "list":
+                    return json.dumps({"jobs": [{"job_id": "abc123", "name": "Scout"}]})
+                return json.dumps({"success": True, "job": job})
+
+            with (
+                mock.patch.object(api, "_bot_home_dir", lambda bot: Path("/unused")),
+                mock.patch.object(api, "_canonical_bot", lambda bot: bot),
+                mock.patch("hermes_cli.web_server_profiles._config_profile_scope", lambda p: nullcontext()),
+                mock.patch("tools.cronjob_tools.cronjob", fake_cronjob),
+            ):
+                return api.run_routine("bot", api.RunRoutineBody(job="Scout"))
+
+        failed = run_with({"executed": True, "execution_success": False, "execution_error": "provider credential missing"})
+        self.assertIs(failed["success"], False)
+        self.assertEqual(failed["error"], "provider credential missing")
+
+        # last_error from an earlier run must not be blamed on a run that passed.
+        passed = run_with({"executed": True, "execution_success": True, "last_error": "stale failure"})
+        self.assertIsNone(passed["error"])
+
+
+class SetupTests(unittest.TestCase):
+    def test_an_enabled_profile_is_seen_as_enabled(self):
+        spec = importlib.util.spec_from_file_location("bot_hq_setup", Path(__file__).parent.parent / "setup.py")
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp)
+            (profile / "config.yaml").write_text("plugins:\n  enabled:\n    - hermes-bot-hq\n    - other\n")
+
+            self.assertEqual(setup._read_enabled_plugins(profile), {"hermes-bot-hq", "other"})
 
 
 if __name__ == "__main__":

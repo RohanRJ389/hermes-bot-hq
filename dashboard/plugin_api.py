@@ -110,7 +110,7 @@ def _canonical_bot(bot: str) -> str:
 def _known_bots() -> List[str]:
     from hermes_cli.profiles import list_profiles
 
-    return [info.name for info in list_profiles()]
+    return [info.name for info in list_profiles(lazy_skill_count=True)]
 
 
 # ── Reading ────────────────────────────────────────────────────────────────
@@ -425,7 +425,12 @@ def _validate_table(payload: Dict[str, Any], warn) -> Dict[str, Any]:
 
 
 def _item_button_ids(entry: Dict[str, Any], allowed: List[Dict[str, Any]], warn, seen_ids: set) -> Tuple[str, List[str]]:
-    """Keep line-button refs that the widget declared. No prompt text from data."""
+    """Keep line-button refs that the widget declared.
+
+    The prompt template comes from the schema, but a send_prompt row button
+    appends this row's id and title from data.json (``promptForButton`` in
+    plugin.js); the button's tooltip shows the resolved prompt.
+    """
     raw_id = str(entry.get("id") or "").strip()
     raw_buttons = entry.get("buttons")
 
@@ -1168,7 +1173,7 @@ async def health() -> Dict[str, Any]:
 
 
 @router.get("/fleet")
-async def fleet() -> Dict[str, Any]:
+def fleet() -> Dict[str, Any]:
     """One Home summary per bot on this machine."""
     bots = []
 
@@ -1182,7 +1187,7 @@ async def fleet() -> Dict[str, Any]:
 
 
 @router.get("/home/{bot}")
-async def home(bot: str) -> Dict[str, Any]:
+def home(bot: str) -> Dict[str, Any]:
     return read_home(bot)
 
 
@@ -1191,43 +1196,43 @@ class RunRoutineBody(BaseModel):
 
 
 @router.post("/home/{bot}/run-routine")
-async def run_routine(bot: str, body: RunRoutineBody) -> Dict[str, Any]:
+def run_routine(bot: str, body: RunRoutineBody) -> Dict[str, Any]:
     """Trigger one of this bot's cron jobs.
 
     The gateway's ``cron.manage`` RPC deliberately exposes only
     list/add/remove/pause/resume, so a manual run cannot go through it. This
-    calls the same ``cronjob`` tool the ``hermes cron run`` CLI uses, with
-    ``HERMES_HOME`` scoped to the bot's profile the way the gateway scopes its
-    own cron calls — one code path, no second scheduler.
-    """
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    calls the same ``cronjob`` tool the ``hermes cron run`` CLI uses, scoped to
+    the bot's profile — home and secrets both, so the run uses that bot's
+    credentials rather than the launch profile's. One code path, no second
+    scheduler.
 
-    home_dir = _bot_home_dir(bot)
-    profile_dir = home_dir.parent
+    Sync on purpose: an inline run drives a whole agent turn, so it must not
+    hold the event loop.
+    """
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    _bot_home_dir(bot)
     job_ref = body.job.strip()
 
     if not job_ref:
         raise HTTPException(status_code=400, detail="job is required")
 
-    token = set_hermes_home_override(str(profile_dir))
-
     try:
-        from tools.cronjob_tools import cronjob
+        with _config_profile_scope(_canonical_bot(bot)):
+            from tools.cronjob_tools import cronjob
 
-        listing = json.loads(cronjob(action="list", include_disabled=True))
-        job_id = _resolve_job_id(job_ref, listing.get("jobs") or [], bot)
+            listing = json.loads(cronjob(action="list", include_disabled=True))
+            job_id = _resolve_job_id(job_ref, listing.get("jobs") or [], bot)
 
-        if not job_id:
-            raise HTTPException(status_code=404, detail=f"no routine matching '{job_ref}' for {bot}")
+            if not job_id:
+                raise HTTPException(status_code=404, detail=f"no routine matching '{job_ref}' for {bot}")
 
-        result = json.loads(cronjob(action="run", job_id=job_id))
+            result = json.loads(cronjob(action="run", job_id=job_id))
     except HTTPException:
         raise
     except Exception as exc:
         log.warning("hermes-bot-hq: run-routine failed for %s/%s: %s", bot, job_ref, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        reset_hermes_home_override(token)
 
     if not result.get("success"):
         raise HTTPException(status_code=409, detail=result.get("error") or "routine did not start")
@@ -1244,6 +1249,10 @@ async def run_routine(bot: str, body: RunRoutineBody) -> Dict[str, Any]:
         "executed": bool(job.get("executed")),
         "success": job.get("execution_success"),
         "skipped": job.get("execution_skipped"),
+        # Why a run that started did not complete, so the UI can say so instead
+        # of reporting "finished". Only read when this run failed: ``last_error``
+        # can be left over from an earlier run.
+        "error": (job.get("execution_error") or job.get("last_error")) if job.get("execution_success") is False else None,
     }
 
 
@@ -1281,7 +1290,7 @@ class ApproveActionBody(BaseModel):
 
 
 @router.post("/home/{bot}/approve-action")
-async def approve_action(bot: str, body: ApproveActionBody) -> Dict[str, Any]:
+def approve_action(bot: str, body: ApproveActionBody) -> Dict[str, Any]:
     """Record that the user accepted this exact file. A stale hash is refused."""
     home_dir = _bot_home_dir(bot)
     path = resolve_script(home_dir, body.script.strip())

@@ -8,7 +8,7 @@ plugin is meant to be easy to turn on.
 ## Work from a clone
 
 ```bash
-git clone https://github.com/the-spirit-realm/hermes-bot-hq.git ~/.hermes/plugins/hermes-bot-hq
+git clone https://github.com/RohanRJ389/hermes-bot-hq.git ~/.hermes/plugins/hermes-bot-hq
 ```
 
 Then follow the [README setup steps](README.md#set-up) (steps 2–4) so you are running your checkout.
