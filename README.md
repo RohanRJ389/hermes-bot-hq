@@ -31,8 +31,10 @@ Do these in order. Skip nothing; the page and the dashboard reader are separate 
 **1. Install the plugin**
 
 ```bash
-hermes plugins install RohanRJ389/hermes-bot-hq
+hermes plugins install hermes-bot-hq
 ```
+
+Bot HQ is in the Hermes plugin catalog, so the name is enough.
 
 **2. Turn on the page**
 
@@ -80,6 +82,7 @@ hermes cron edit <job-id> --add-skill hermes-bot-hq:bot-home
 
 ## Other ways to install
 
+- **From GitHub:** `hermes plugins install RohanRJ389/hermes-bot-hq` installs the latest code from the repo instead of the version pinned in the catalog.
 - **From Desktop, no terminal:** paste `hermes://plugin/install?repo=RohanRJ389/hermes-bot-hq` into Hermes. That is an install link the app handles, not a website.
 - **From a git clone:** put the repo at `~/.hermes/plugins/hermes-bot-hq`, then do steps 2–4 above.
 
