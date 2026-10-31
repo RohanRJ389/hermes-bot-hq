@@ -111,6 +111,13 @@ The data contract is [`docs/home-contract.md`](docs/home-contract.md). A complet
 
 Issues and pull requests are welcome. MIT, no CLA. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run from a clone, where to change what, tests, and ideas that would help.
 
+Open issues looking for help:
+
+- [#9 Blink the bot avatars](https://github.com/RohanRJ389/hermes-bot-hq/issues/9) — good first issue
+- [#8 Let bots see what their Home looks like](https://github.com/RohanRJ389/hermes-bot-hq/issues/8) — help wanted
+
+Browse all open issues: https://github.com/RohanRJ389/hermes-bot-hq/issues
+
 ## Known limits
 
 - The fleet UI is Desktop-only today. The Home reader is already HTTP, so the Hermes web dashboard is the natural next surface — it does not exist yet.
