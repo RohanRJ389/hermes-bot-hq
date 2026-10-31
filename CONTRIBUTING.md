@@ -84,9 +84,13 @@ nothing extra to pip-install.
 
 - **Easier setup.** Two switches, a backend restart, and a yellow banner if
   you miss one — anything that makes the first-run path shorter or obvious.
-- **Blinking avatars.** Fleet cards and the bot page show the face, but the
-  eyes stay still. In Hermes Desktop those faces blink. Make Bot HQ do the
-  same, without copying the whole Bot Mode face renderer.
+- **[Blinking avatars](https://github.com/RohanRJ389/hermes-bot-hq/issues/9).**
+  Fleet cards and the bot page show the face, but the eyes stay still. In
+  Hermes Desktop those faces blink. Make Bot HQ do the same, without copying
+  the whole Bot Mode face renderer.
+- **[Let bots see what their Home looks like](https://github.com/RohanRJ389/hermes-bot-hq/issues/8).**
+  Bots only see `schema.json` and `data.json`; give them a way to see the
+  rendered Home.
 - **A better home in Hermes.** Bot HQ is a sidebar page plus a palette
   command. If it belongs on the main dashboard, in a tab, or somewhere
   people already look, propose it.
