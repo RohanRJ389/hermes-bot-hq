@@ -94,13 +94,14 @@ nothing extra to pip-install.
 - **A better home in Hermes.** Bot HQ is a sidebar page plus a palette
   command. If it belongs on the main dashboard, in a tab, or somewhere
   people already look, propose it.
-- **Web view.** Bot HQ only runs inside Hermes Desktop. The Home reader is
-  already HTTP. Make the same fleet and bot page usable in the Hermes web
-  view, not as a separate site.
-- **Another example Home.** `examples/` is one research-desk pair. A second
-  complete `schema.json` + `data.json` for a different kind of bot (still
-  only the closed widget types) is a good first PR — keep `examples/README.md`
-  in sync.
+- **[Web view](https://github.com/RohanRJ389/hermes-bot-hq/issues/13).**
+  Bot HQ only runs inside Hermes Desktop. The Home reader is already HTTP.
+  Make the same fleet and bot page usable in the Hermes web view, not as a
+  separate site.
+- **[Another example Home](https://github.com/RohanRJ389/hermes-bot-hq/issues/12).**
+  `examples/` is one research-desk pair. A second complete `schema.json` +
+  `data.json` for a different kind of bot (still only the closed widget
+  types) is a good first PR — keep `examples/README.md` in sync.
 - **A new closed widget type** — if a real bot cannot say what it needs with
   the current set.
 
