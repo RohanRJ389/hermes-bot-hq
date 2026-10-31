@@ -82,22 +82,15 @@ nothing extra to pip-install.
 
 ## Good first work
 
-Open issues ready to claim:
-
-- [#9 Blink the bot avatars](https://github.com/RohanRJ389/hermes-bot-hq/issues/9)
-  (`good first issue`) — fleet cards and the bot page show the face, but the
-  eyes stay still. In Hermes Desktop those faces blink. Make Bot HQ do the
-  same, without copying the whole Bot Mode face renderer. Start in
-  `desktop/plugin.js`.
-- [#8 Let bots see what their Home looks like](https://github.com/RohanRJ389/hermes-bot-hq/issues/8)
-  (`help wanted`) — bots only see `schema.json` and `data.json`, so they
-  cannot tell how Home actually looks. Give them a way to see the rendered
-  layout. Start with `skills/bot-home/SKILL.md` and `desktop/plugin.js`.
-
-Other ideas (open an issue first if you want to take one on):
-
 - **Easier setup.** Two switches, a backend restart, and a yellow banner if
   you miss one — anything that makes the first-run path shorter or obvious.
+- **[Blinking avatars](https://github.com/RohanRJ389/hermes-bot-hq/issues/9).**
+  Fleet cards and the bot page show the face, but the eyes stay still. In
+  Hermes Desktop those faces blink. Make Bot HQ do the same, without copying
+  the whole Bot Mode face renderer.
+- **[Let bots see what their Home looks like](https://github.com/RohanRJ389/hermes-bot-hq/issues/8).**
+  Bots only see `schema.json` and `data.json`; give them a way to see the
+  rendered Home.
 - **A better home in Hermes.** Bot HQ is a sidebar page plus a palette
   command. If it belongs on the main dashboard, in a tab, or somewhere
   people already look, propose it.
@@ -110,8 +103,6 @@ Other ideas (open an issue first if you want to take one on):
   in sync.
 - **A new closed widget type** — if a real bot cannot say what it needs with
   the current set.
-
-All open issues: https://github.com/RohanRJ389/hermes-bot-hq/issues
 
 Open an issue if you are unsure whether an idea fits. Better a short
 conversation than a PR that has to fight the contract.
