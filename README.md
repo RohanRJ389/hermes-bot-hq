@@ -4,10 +4,10 @@
 <div align="center">
 <table>
 <tr>
-<td align="center"><font size="6"><strong>977</strong></font><br>Views</td>
-<td align="center"><font size="6"><strong>277</strong></font><br>Unique viewers</td>
-<td align="center"><font size="6"><strong>1,503</strong></font><br>Clones</td>
-<td align="center"><font size="6"><strong>891</strong></font><br>Unique cloners</td>
+<td align="center"><font size="6"><strong>982</strong></font><br>Views</td>
+<td align="center"><font size="6"><strong>282</strong></font><br>Unique viewers</td>
+<td align="center"><font size="6"><strong>1,541</strong></font><br>Clones</td>
+<td align="center"><font size="6"><strong>912</strong></font><br>Unique cloners</td>
 </tr>
 </table>
 <sub>All-time totals. Unique counts are sums of daily uniques, not deduplicated across days.</sub><br><br>
