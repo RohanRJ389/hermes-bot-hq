@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+/** The cli.exec call, wherever it falls after the Bot Chat lookups. */
+const cliCall = plugin => plugin.requests.find(request => request.method === 'cli.exec')
+
 import { loadPlugin } from './load-plugin.mjs'
 
 // Actions are the only place a Home reaches out of its own page, so each one
@@ -125,7 +128,7 @@ test('send_prompt goes to Bot Chat with the declared prompt', async () => {
     prompt: 'Review the findings on this dashboard.'
   })
 
-  assert.deepEqual(plugin.requests[0].params.argv.slice(-1), ['Review the findings on this dashboard.'])
+  assert.deepEqual(cliCall(plugin).params.argv.slice(-1), ['Review the findings on this dashboard.'])
 })
 
 test('a line click appends item id and title even when the prompt is escalate', () => {
@@ -169,7 +172,7 @@ test('a line send_prompt includes the item title in the query', async () => {
     { id: 'api-2-disk', title: 'disk full on api-2' }
   )
 
-  const query = plugin.requests[0].params.argv.at(-1)
+  const query = cliCall(plugin).params.argv.at(-1)
 
   assert.match(query, /escalate/)
   assert.match(query, /disk full on api-2/)
@@ -286,10 +289,12 @@ test('notify: true tells the bot after a successful run; off by default it does 
   })
 
   await loud.performAction('monitor', { ...IGNORE, notify: true }, ROW, { widgetId: 'issues' })
+  // notify is fire-and-forget; its Bot Chat lookups resolve before cli.exec.
+  await new Promise(resolve => setImmediate(resolve))
 
-  assert.equal(loud.requests[0].method, 'cli.exec')
+  assert.ok(cliCall(loud), 'notify still reaches the bot through cli.exec')
 
-  const query = loud.requests[0].params.argv.at(-1)
+  const query = cliCall(loud).params.argv.at(-1)
 
   assert.match(query, /home\/actions\/ignore/)
   assert.match(query, /api-2-disk/)
@@ -309,7 +314,7 @@ test('the composer sends to the bot Chat and reports a refusal', async () => {
 
   await plugin.sendPrompt('researcher', 'refresh the numbers')
 
-  const [call] = plugin.requests
+  const call = cliCall(plugin)
 
   assert.equal(call.method, 'cli.exec')
   assert.deepEqual(call.params.argv, [
@@ -392,4 +397,105 @@ test('copyText writes the prompt and says so', async () => {
       Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previous })
     }
   }
+})
+
+/* An open Bot Chat holds its writer lease in this Desktop backend, so a second
+ * Hermes process (cli.exec) is refused SESSION_NOT_OWNED. These pin the hand-off
+ * to the live chat and the no-double-send fallback rules. */
+const PROFILES_WITH_CHAT = { profiles: [{ name: 'leaddesk', canonical_session: { id: 'api_1_bot' } }] }
+const CHAT_IS_OPEN = { sessions: [{ id: 'other123', session_key: 'api_9_other' }, { id: '094f4a9d', session_key: 'api_1_bot' }] }
+
+test('an open Bot Chat gets the prompt queued into it, not a second Hermes process', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      'profiles.list': PROFILES_WITH_CHAT,
+      'session.active_list': CHAT_IS_OPEN,
+      'prompt.submit': { status: 'queued' }
+    }
+  })
+
+  const sent = await plugin.sendPrompt('leaddesk', 'Triage my inbox now')
+
+  assert.deepEqual(sent, { via: 'session', status: 'queued' })
+
+  const submit = plugin.requests.find(request => request.method === 'prompt.submit')
+
+  assert.deepEqual(submit.params, { session_id: '094f4a9d', text: 'Triage my inbox now', queued: true })
+  assert.equal(cliCall(plugin), undefined)
+})
+
+test('a Bot Chat that is not open anywhere here still goes through cli.exec', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      'profiles.list': PROFILES_WITH_CHAT,
+      'session.active_list': { sessions: [{ id: 'other123', session_key: 'api_9_other' }] },
+      'cli.exec': { blocked: false, code: 0, output: 'done' }
+    }
+  })
+
+  await plugin.sendPrompt('leaddesk', 'hi')
+
+  assert.equal(plugin.requests.some(request => request.method === 'prompt.submit'), false)
+  assert.equal(cliCall(plugin).params.argv.at(-1), 'hi')
+})
+
+test('a refused hand-off falls back to cli.exec: nothing was admitted', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      'profiles.list': PROFILES_WITH_CHAT,
+      'session.active_list': CHAT_IS_OPEN,
+      'prompt.submit': new Error('session no longer live; retry resume'),
+      'cli.exec': { blocked: false, code: 0, output: 'done' }
+    }
+  })
+
+  await plugin.sendPrompt('leaddesk', 'hi')
+
+  assert.ok(cliCall(plugin))
+})
+
+test('a timed-out hand-off is never resent: it may already be queued', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      'profiles.list': PROFILES_WITH_CHAT,
+      'session.active_list': CHAT_IS_OPEN,
+      'prompt.submit': new Error('request timed out after 30s: prompt.submit'),
+      'cli.exec': { blocked: false, code: 0, output: 'done' }
+    }
+  })
+
+  const sent = await plugin.sendPrompt('leaddesk', 'hi')
+
+  assert.deepEqual(sent, { via: 'session', status: 'unconfirmed' })
+  assert.equal(cliCall(plugin), undefined)
+})
+
+test('a compressed Bot Chat is matched by the live tip it continues under', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      'profiles.list': { profiles: [{ name: 'leaddesk', canonical_session: { id: 'api_1_bot', resolved_id: 'api_1_bot_tip' } }] },
+      'session.active_list': { sessions: [{ id: 'tip0live', session_key: 'api_1_bot_tip' }] },
+      'prompt.submit': { status: 'started' }
+    }
+  })
+
+  const sent = await plugin.sendPrompt('leaddesk', 'hi')
+
+  assert.equal(sent.via, 'session')
+  assert.equal(plugin.requests.find(request => request.method === 'prompt.submit').params.session_id, 'tip0live')
+  assert.equal(cliCall(plugin), undefined)
+})
+
+test('a failed live-chat lookup falls back to cli.exec', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      'profiles.list': PROFILES_WITH_CHAT,
+      'session.active_list': new Error('method not found'),
+      'cli.exec': { blocked: false, code: 0, output: 'done' }
+    }
+  })
+
+  await plugin.sendPrompt('leaddesk', 'hi')
+
+  assert.ok(cliCall(plugin))
 })
