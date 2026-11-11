@@ -1979,10 +1979,16 @@ async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent
   }
 
   try {
-    await sendPrompt(bot, prompt)
+    const sent = await sendPrompt(bot, prompt)
 
     if (typeof onSent === 'function') {
       onSent()
+    }
+
+    if (sent?.via === 'session') {
+      // Admitted into the open Bot Chat: the reply streams there, and the
+      // live turn-end events refresh this Home when the bot rewrites it.
+      host.notify({ kind: 'info', message: `Sent to ${bot}'s Bot Chat` })
     }
 
     await refreshDashboard(bot)
@@ -2007,12 +2013,82 @@ async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent
   }
 }
 
+/** Every id a bot's canonical Bot Chat answers to: the registry row and, once
+ *  compressed, the live tip it continues under. Empty when it has none yet. */
+async function botChatSessionIds(bot) {
+  const payload = await host.request('profiles.list', { include_sessions: true })
+  const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.profiles) ? payload.profiles : []
+  const chat = rows.find(entry => String(entry?.name || '') === bot)?.canonical_session
+
+  return new Set([chat?.id, chat?.resolved_id].map(id => String(id || '')).filter(Boolean))
+}
+
+function isRpcTimeout(error) {
+  return /timed out after \d+s/i.test(String(error?.message || error || ''))
+}
+
+/** Hand a prompt to the bot's Bot Chat when that chat is live in this backend.
+ *
+ *  `cli.exec` starts a second Hermes process. If the Bot Chat is open in a
+ *  Desktop window, that window's runtime holds the chat's writer lease and the
+ *  CLI is refused `SESSION_NOT_OWNED` ("This chat is open in another Hermes
+ *  window"), so every send_prompt button failed while the user had their bot's
+ *  chat open. Submitting to the live runtime instead joins the conversation the
+ *  user is looking at; `queued: true` waits behind a running turn rather than
+ *  interrupting it.
+ *
+ *  Returns null — and the caller falls back to `cli.exec` — only when nothing
+ *  was submitted: no Bot Chat, no live runtime for it, or a JSON-RPC refusal.
+ *  A timeout may already be admitted, so it is reported as sent, never resent. */
+async function submitToBotChat(bot, prompt) {
+  let liveId = ''
+
+  try {
+    const chatIds = await botChatSessionIds(bot)
+
+    if (!chatIds.size) {
+      return null
+    }
+
+    const active = await host.request('session.active_list', {})
+    const live = (Array.isArray(active?.sessions) ? active.sessions : []).find(row =>
+      chatIds.has(String(row?.session_key || ''))
+    )
+
+    liveId = String(live?.id || '')
+  } catch {
+    return null
+  }
+
+  if (!liveId) {
+    return null
+  }
+
+  try {
+    const submitted = await host.request('prompt.submit', { session_id: liveId, text: prompt, queued: true })
+
+    return { via: 'session', status: String(submitted?.status || 'started') }
+  } catch (error) {
+    if (isRpcTimeout(error)) {
+      return { via: 'session', status: 'unconfirmed' }
+    }
+
+    return null
+  }
+}
+
 /** Send one prompt to a bot's canonical Bot Chat without opening it.
  *
  *  `cli.exec` is the gateway's generic CLI door and the same mechanism bots use
  *  to message each other, so a composer message lands in the bot's real
  *  conversation history rather than in a side channel the bot cannot see. */
 async function sendPrompt(bot, prompt) {
+  const viaSession = await submitToBotChat(bot, prompt)
+
+  if (viaSession) {
+    return viaSession
+  }
+
   const result = await host.request('cli.exec', {
     argv: ['-p', bot, 'chat', '-c', 'Bot Chat', '--create-if-missing', '-Q', '--query', prompt],
     timeout: 300

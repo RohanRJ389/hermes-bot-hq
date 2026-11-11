@@ -73,7 +73,9 @@ export function loadPlugin({ requestResults = {}, restResults = {}, revealPath =
     request: (method, params) => {
       requests.push({ method, params })
 
-      return Promise.resolve(requestResults[method] ?? {})
+      const result = requestResults[method]
+
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result ?? {})
     },
     navigate: () => undefined,
     notify: params => notifications.push(params),
