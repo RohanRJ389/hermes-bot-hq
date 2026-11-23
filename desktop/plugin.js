@@ -1978,6 +1978,9 @@ async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent
     setProcessing(true)
   }
 
+  // True when the processing flag was handed to the session's turn watcher.
+  let heldByTurn = false
+
   try {
     const sent = await sendPrompt(bot, prompt)
 
@@ -1989,6 +1992,18 @@ async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent
       // Admitted into the open Bot Chat: the reply streams there, and the
       // live turn-end events refresh this Home when the bot rewrites it.
       host.notify({ kind: 'info', message: `Sent to ${bot}'s Bot Chat` })
+
+      // prompt.submit returns once the prompt is accepted, not when the bot is
+      // done. Keep "Working…" up until that turn ends, so the Home does not
+      // look idle and re-enable its buttons mid-turn.
+      heldByTurn = true
+      void sent.turn.then(() => {
+        if (typeof setProcessing === 'function') {
+          setProcessing(false)
+        }
+
+        return refreshDashboard(bot)
+      }).catch(() => undefined)
     }
 
     await refreshDashboard(bot)
@@ -2007,7 +2022,7 @@ async function deliverPrompt(bot, prompt, { setProcessing, homeUpdatedAt, onSent
       host.notifyError(error, `Could not reach ${bot}`)
     }
   } finally {
-    if (typeof setProcessing === 'function') {
+    if (!heldByTurn && typeof setProcessing === 'function') {
       setProcessing(false)
     }
   }
@@ -2025,6 +2040,88 @@ async function botChatSessionIds(bot) {
 
 function isRpcTimeout(error) {
   return /timed out after \d+s/i.test(String(error?.message || error || ''))
+}
+
+/** A turn ends on either of these. turn.error is left out: it can fire before
+ *  the turn is really over, so a failed turn is released by the safety timer. */
+const TURN_START_EVENTS = ['turn.started', 'turn.start']
+const TURN_END_EVENTS = ['turn.ended', 'turn.end', 'turn.completed']
+
+/** Longest the processing flag may stay up with no turn end seen. */
+const TURN_WAIT_MAX_MS = 15 * 60_000
+
+/** Watch one session's turns, so "Working…" can last the whole turn.
+ *
+ *  Subscribe before `prompt.submit` so no turn event is missed, then call
+ *  `settle(status)` with the submit reply. `done` resolves at the end of this
+ *  prompt's own turn, or when the safety timer fires. Listeners are removed
+ *  either way. `stop()` abandons the watch.
+ *
+ *  A prompt admitted as `started` begins at once, so the first turn end is its
+ *  own. Any other status means it queued behind a turn already running. That
+ *  earlier turn's end must not release the Home, so only an end after this
+ *  prompt's own turn start counts. The start event is what tells them apart. */
+function watchSessionTurns(sessionId, { maxMs = TURN_WAIT_MAX_MS } = {}) {
+  const seen = []
+  const stops = []
+  let queued = null
+  let timer = 0
+  let resolveDone = () => undefined
+
+  const done = new Promise(resolve => {
+    resolveDone = resolve
+  })
+
+  const stop = () => {
+    clearTimeout(timer)
+    stops.splice(0).forEach(unsub => unsub?.())
+    resolveDone()
+  }
+
+  const check = () => {
+    if (queued === null) {
+      return
+    }
+
+    let ownTurn = !queued
+
+    for (const kind of seen) {
+      if (kind === 'start') {
+        ownTurn = true
+      } else if (ownTurn) {
+        stop()
+
+        return
+      }
+    }
+  }
+
+  if (typeof host.onEvent !== 'function') {
+    // Older desktops cannot see turn ends: release at once, as before.
+    stop()
+
+    return { done, settle: () => undefined, stop }
+  }
+
+  const record = kind => event => {
+    if (String(event?.session_id || '') === sessionId) {
+      seen.push(kind)
+      check()
+    }
+  }
+
+  TURN_START_EVENTS.forEach(type => stops.push(host.onEvent(type, record('start'))))
+  TURN_END_EVENTS.forEach(type => stops.push(host.onEvent(type, record('end'))))
+  timer = setTimeout(stop, maxMs)
+
+  return {
+    done,
+    settle: status => {
+      queued = status !== 'started'
+      check()
+    },
+    stop
+  }
 }
 
 /** Hand a prompt to the bot's Bot Chat when that chat is live in this backend.
@@ -2064,14 +2161,26 @@ async function submitToBotChat(bot, prompt) {
     return null
   }
 
+  // Subscribe before submitting, so a fast turn's events cannot slip past.
+  const watch = watchSessionTurns(liveId)
+
   try {
     const submitted = await host.request('prompt.submit', { session_id: liveId, text: prompt, queued: true })
+    const reported = String(submitted?.status || '')
 
-    return { via: 'session', status: String(submitted?.status || 'started') }
+    watch.settle(reported)
+
+    return { via: 'session', status: reported || 'unknown', turn: watch.done }
   } catch (error) {
     if (isRpcTimeout(error)) {
-      return { via: 'session', status: 'unconfirmed' }
+      // Possibly admitted, so keep watching. Treat it as queued: release only
+      // after its own turn ends.
+      watch.settle('unconfirmed')
+
+      return { via: 'session', status: 'unconfirmed', turn: watch.done }
     }
+
+    watch.stop()
 
     return null
   }

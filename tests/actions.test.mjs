@@ -405,6 +405,19 @@ test('copyText writes the prompt and says so', async () => {
 const PROFILES_WITH_CHAT = { profiles: [{ name: 'leaddesk', canonical_session: { id: 'api_1_bot' } }] }
 const CHAT_IS_OPEN = { sessions: [{ id: 'other123', session_key: 'api_9_other' }, { id: '094f4a9d', session_key: 'api_1_bot' }] }
 
+/* Turn events reach the plugin through host.onEvent; these fire them the same
+ * way the desktop would, to every listener subscribed to that type. */
+const emit = (plugin, type, event) =>
+  plugin.eventSubs.filter(sub => sub.type === type).forEach(sub => sub.listener(event))
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+/* A watch left open keeps its safety timer alive, so each test that leaves one
+ * open closes it with the turn's start and end. */
+const closeTurn = (plugin, sessionId) => {
+  emit(plugin, 'turn.start', { session_id: sessionId })
+  emit(plugin, 'turn.end', { session_id: sessionId })
+}
+
 test('an open Bot Chat gets the prompt queued into it, not a second Hermes process', async () => {
   const plugin = loadPlugin({
     requestResults: {
@@ -416,12 +429,15 @@ test('an open Bot Chat gets the prompt queued into it, not a second Hermes proce
 
   const sent = await plugin.sendPrompt('leaddesk', 'Triage my inbox now')
 
-  assert.deepEqual(sent, { via: 'session', status: 'queued' })
+  assert.equal(sent.via, 'session')
+  assert.equal(sent.status, 'queued')
 
   const submit = plugin.requests.find(request => request.method === 'prompt.submit')
 
   assert.deepEqual(submit.params, { session_id: '094f4a9d', text: 'Triage my inbox now', queued: true })
   assert.equal(cliCall(plugin), undefined)
+
+  closeTurn(plugin, '094f4a9d')
 })
 
 test('a Bot Chat that is not open anywhere here still goes through cli.exec', async () => {
@@ -466,8 +482,11 @@ test('a timed-out hand-off is never resent: it may already be queued', async () 
 
   const sent = await plugin.sendPrompt('leaddesk', 'hi')
 
-  assert.deepEqual(sent, { via: 'session', status: 'unconfirmed' })
+  assert.equal(sent.via, 'session')
+  assert.equal(sent.status, 'unconfirmed')
   assert.equal(cliCall(plugin), undefined)
+
+  closeTurn(plugin, '094f4a9d')
 })
 
 test('a compressed Bot Chat is matched by the live tip it continues under', async () => {
@@ -484,6 +503,8 @@ test('a compressed Bot Chat is matched by the live tip it continues under', asyn
   assert.equal(sent.via, 'session')
   assert.equal(plugin.requests.find(request => request.method === 'prompt.submit').params.session_id, 'tip0live')
   assert.equal(cliCall(plugin), undefined)
+
+  closeTurn(plugin, 'tip0live')
 })
 
 test('a failed live-chat lookup falls back to cli.exec', async () => {
@@ -498,4 +519,115 @@ test('a failed live-chat lookup falls back to cli.exec', async () => {
   await plugin.sendPrompt('leaddesk', 'hi')
 
   assert.ok(cliCall(plugin))
+})
+
+/* prompt.submit returns once the prompt is accepted, long before the bot is
+ * done. On the session path "Working…" must hold until that turn ends. */
+const OPEN_CHAT_WITH_SUBMIT = submit => ({
+  requestResults: {
+    'profiles.list': PROFILES_WITH_CHAT,
+    'session.active_list': CHAT_IS_OPEN,
+    'prompt.submit': submit
+  }
+})
+
+test('a prompt admitted to the open chat keeps Working up until the turn ends', async () => {
+  const plugin = loadPlugin(OPEN_CHAT_WITH_SUBMIT({ status: 'started' }))
+  const flags = []
+
+  await plugin.deliverPrompt('leaddesk', 'Triage my inbox now', { setProcessing: value => flags.push(value) })
+
+  // Accepted, but the bot is still working: the flag must not drop yet.
+  assert.deepEqual(flags, [true])
+
+  emit(plugin, 'turn.end', { session_id: '094f4a9d' })
+  await flush()
+
+  assert.deepEqual(flags, [true, false])
+})
+
+test('a turn end in another session does not release Working', async () => {
+  const plugin = loadPlugin(OPEN_CHAT_WITH_SUBMIT({ status: 'started' }))
+  const flags = []
+
+  await plugin.deliverPrompt('leaddesk', 'hi', { setProcessing: value => flags.push(value) })
+
+  emit(plugin, 'turn.end', { session_id: 'other123' })
+  await flush()
+
+  assert.deepEqual(flags, [true])
+
+  emit(plugin, 'turn.completed', { session_id: '094f4a9d' })
+  await flush()
+
+  assert.deepEqual(flags, [true, false])
+})
+
+test('a queued prompt is not released by the turn that was already running', async () => {
+  const plugin = loadPlugin(OPEN_CHAT_WITH_SUBMIT({ status: 'queued' }))
+  const flags = []
+
+  await plugin.deliverPrompt('leaddesk', 'hi', { setProcessing: value => flags.push(value) })
+
+  // The earlier turn ends first. Our prompt has not started yet, so Working stays.
+  emit(plugin, 'turn.end', { session_id: '094f4a9d' })
+  await flush()
+
+  assert.deepEqual(flags, [true])
+
+  // Our own turn starts, then ends: only now is the Home released.
+  emit(plugin, 'turn.started', { session_id: '094f4a9d' })
+  emit(plugin, 'turn.end', { session_id: '094f4a9d' })
+  await flush()
+
+  assert.deepEqual(flags, [true, false])
+})
+
+test('a turn that ended before the submit reply still releases a started prompt', async () => {
+  const plugin = loadPlugin()
+  const before = plugin.eventSubs.length
+  const watch = plugin.watchSessionTurns('094f4a9d', { maxMs: 60_000 })
+
+  emit(plugin, 'turn.end', { session_id: '094f4a9d' })
+  watch.settle('started')
+
+  const outcome = await Promise.race([watch.done.then(() => 'released'), flush().then(() => 'held')])
+
+  assert.equal(outcome, 'released')
+  assert.equal(plugin.eventSubs.length, before)
+})
+
+test('the safety timer releases a turn that never reports its end', async () => {
+  const plugin = loadPlugin()
+  const before = plugin.eventSubs.length
+  const watch = plugin.watchSessionTurns('094f4a9d', { maxMs: 5 })
+
+  watch.settle('queued')
+  await watch.done
+
+  assert.equal(plugin.eventSubs.length, before)
+})
+
+test('a refused hand-off releases its turn listeners before falling back', async () => {
+  const plugin = loadPlugin({
+    requestResults: {
+      ...OPEN_CHAT_WITH_SUBMIT(new Error('session no longer live; retry resume')).requestResults,
+      'cli.exec': { blocked: false, code: 0, output: 'done' }
+    }
+  })
+  const before = plugin.eventSubs.length
+
+  await plugin.sendPrompt('leaddesk', 'hi')
+
+  assert.equal(plugin.eventSubs.length, before)
+  assert.ok(cliCall(plugin))
+})
+
+test('a prompt sent through cli.exec clears Working as soon as the call returns', async () => {
+  const plugin = loadPlugin({ requestResults: { 'cli.exec': { blocked: false, code: 0, output: 'done' } } })
+  const flags = []
+
+  await plugin.deliverPrompt('researcher', 'refresh the numbers', { setProcessing: value => flags.push(value) })
+
+  assert.deepEqual(flags, [true, false])
 })

@@ -38,6 +38,8 @@ const EXPORTED = [
   'notifyPromptFor',
   '$pendingApproval',
   'sendPrompt',
+  'deliverPrompt',
+  'watchSessionTurns',
   'refreshDashboard',
   'isCliExecTimeout',
   'runRoutine',
